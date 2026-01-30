@@ -4,6 +4,9 @@
 #include <dirent.h>
 #include "shellmemory.h"
 #include "shell.h"
+#include <sys/stat.h>
+#include <ctype.h>
+#include <unistd.h>
 
 int MAX_ARGS_SIZE = 3;
 int MAX_DIR_SIZE = 256;
@@ -26,6 +29,9 @@ int print(char *var);
 int source(char *script);
 int echo(char * string);
 int my_ls();
+int my_mkdir(char *dirname);
+int my_touch(char *filename);
+int my_cd(char *dirname);
 int badcommandFileDoesNotExist();
 
 // Interpret commands and their arguments
@@ -80,9 +86,21 @@ int interpreter(char *command_args[], int args_size) {
         if (args_size != 1)
             return badcommand();
         return my_ls();
-    }
-    
-    else
+    } else if (strcmp(command_args[0], "my_mkdir") == 0) {
+        //mkdir
+        if (args_size != 2)
+            return badcommand();
+        return my_mkdir(command_args[1]);
+    } else if (strcmp(command_args[0], "my_touch") == 0) {
+        //touch
+        if (args_size != 2)
+            return badcommand();
+        return my_touch(command_args[1]);
+    } else if (strcmp(command_args[0], "my_cd") == 0) {
+        if (args_size != 2)
+            return badcommand();
+    return my_cd(command_args[1]);
+    } else
         return badcommand();
 }
 
@@ -207,3 +225,80 @@ int my_ls(){
     closedir(dirp);
     return 0;
 }
+
+// helper: returns 1 if s is a non-empty string of only letter/number, else 0
+int alphanumeric(const char *s){
+    if (s == NULL || s[0] == '\0') return 0;
+
+    for (int i = 0; s[i] != '\0'; i++) {
+        if (!isalnum(s[i])) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+int my_mkdir(char *dirname){
+    const char *final_dir = NULL;
+
+    // Case 1: normal directory name
+    if (dirname[0] != '$') {
+        if (!alphanumeric(dirname)) {
+            printf("Bad command: my_mkdir\n");
+            return 0;
+        }
+        final_dir = dirname;
+    }
+    // Case 2: dirname starts with '$'
+    else {
+        const char *var = dirname + 1;   // skip '$'
+        // variable name after '$' must be alphanumeric
+        if (!alphanumeric(var)) {
+            printf("Bad command: my_mkdir\n");
+            return 0;
+        }
+        char* INVALID_STRING = "Variable does not exist";
+        char *val = mem_get_value((char*)var);
+        if (strcmp(val, INVALID_STRING) == 0){
+            printf("Bad command: my_mkdir\n");
+            return 0;
+        }
+        // value must be a single alphanumeric token too
+        if (!alphanumeric(val)) {
+            printf("Bad command: my_mkdir\n");
+            return 0;
+        }
+        final_dir = val;
+    }
+    // Try to create the directory
+    if (mkdir(final_dir, 0777) != 0) {
+        printf("Bad command: my_mkdir\n");
+        return 0;
+    }
+    return 0;
+}
+
+int my_touch(char *filename){
+    if (alphanumeric(filename)){
+        FILE *f = fopen(filename, "a");
+        fclose(f);
+    }
+    return 0;
+}
+
+int my_cd(char *dirname){
+    if (!alphanumeric(dirname)){
+        printf("Bad command: my_cd\n");
+        return 0;
+    }
+    // chdir(dirname) tries to move into dirname inside current directory
+    if (chdir(dirname) != 0) {
+        // directory doesn't exist or not accessible
+        printf("Bad command: my_cd\n");
+        return 0;
+    }
+    // success
+    return 0;
+}
+
+
