@@ -49,6 +49,24 @@ int wordEnding(char c) {
 }
 
 int parseInput(char inp[]) {
+    // One-liner support
+    if (strchr(inp, ';') != NULL) {
+        char *copy = strdup(inp);      // make modifiable copy
+        char *command = strtok(copy, ";"); // get first command
+        int errCode = 0;
+
+        while (command != NULL) {
+            // skip leading spaces in each chunk
+            while (*command == ' ') command++;
+            errCode = parseInput(command);
+
+            command = strtok(NULL, ";");
+        }
+
+        free(copy);
+        return errCode;
+    }
+
     char tmp[200], *words[100];                            
     int ix = 0, w = 0;
     int wordlen;
