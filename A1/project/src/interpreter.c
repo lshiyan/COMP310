@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <dirent.h>
+#include <sys/wait.h>
 #include "shellmemory.h"
 #include "shell.h"
 #include <sys/stat.h>
@@ -32,6 +33,7 @@ int my_ls();
 int my_mkdir(char *dirname);
 int my_touch(char *filename);
 int my_cd(char *dirname);
+int run(char *command_args[], int args_size);
 int badcommandFileDoesNotExist();
 
 // Interpret commands and their arguments
@@ -97,11 +99,17 @@ int interpreter(char *command_args[], int args_size) {
             return badcommand();
         return my_touch(command_args[1]);
     } else if (strcmp(command_args[0], "my_cd") == 0) {
+        //cd
         if (args_size != 2)
             return badcommand();
-    return my_cd(command_args[1]);
-    } else
-        return badcommand();
+        return my_cd(command_args[1]);
+    } else if (strcmp(command_args[0], "run") == 0) {
+        //run
+        if (args_size < 2)
+            return badcommand();
+        return run(command_args, args_size);
+    }   
+    else {return badcommand();}
 }
 
 int help() {
@@ -302,3 +310,47 @@ int my_cd(char *dirname){
 }
 
 
+int run(char *command_args[], int args_size){
+    //Allocate space for command and command args.
+    const char* command = command_args[1];
+    char *args[args_size];
+
+    //Create full command filename
+    char full_command[100] = "/bin/";
+    strcat(full_command, command);
+    int child_status;
+
+    //Create execv args.
+    for (int i = 1; i < args_size; i++){
+        args[i - 1] = command_args[i];
+    }
+    args[args_size - 1] = NULL;
+
+    //Fork exec wait
+    pid_t pid = fork();
+
+    if (pid < 0)
+    {
+        perror("Fork failed\n");
+        return 1;
+    }
+    if (pid == 0){
+        execv(full_command, args);
+        perror("execv");
+        _exit(1);
+    }
+
+    int status;
+    //Check error for wait.
+    if (waitpid(pid, &status, 0) < 0) {
+        perror("waitpid");
+        return 1;
+    }
+
+    // Child process succeeded
+    if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+        return 0;
+    }
+
+    return 1;
+}
