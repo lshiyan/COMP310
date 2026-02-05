@@ -1,2 +1,0 @@
-run cat set.txt
-quit

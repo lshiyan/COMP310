@@ -318,7 +318,6 @@ int run(char *command_args[], int args_size){
     //Create full command filename
     char full_command[100] = "/bin/";
     strcat(full_command, command);
-    int child_status;
 
     //Create execv args.
     for (int i = 1; i < args_size; i++){
