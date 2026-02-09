@@ -151,7 +151,9 @@ int print(char *var) {
 
 int source(char *script) {
     int errCode = 0;
+    char *line_list[MEM_SIZE];
     char line[MAX_USER_INPUT];
+    int num_lines = 0;
     FILE *p = fopen(script, "rt");      // the program is in a file
 
     if (p == NULL) {
@@ -160,8 +162,9 @@ int source(char *script) {
 
     fgets(line, MAX_USER_INPUT - 1, p);
     while (1) {
-        errCode = parseInput(line);     // which calls interpreter()
-        memset(line, 0, sizeof(line));
+        line_list[num_lines] = malloc(strlen(line) + 1);
+        strcpy(line_list[num_lines], line);
+        num_lines++;
 
         if (feof(p)) {
             break;
@@ -171,7 +174,13 @@ int source(char *script) {
 
     fclose(p);
 
-    return errCode;
+    int start_idx = add_process(line_list, num_lines);
+    if (start_idx == -1) {
+        printf("Error: Out of memory.\n");
+        return 1;
+    }
+    
+    return 0;
 }
 
 int echo(char *string){
