@@ -1,6 +1,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <unistd.h>
 #include "shellmemory.h"
 
 int pid_counter = 0;
@@ -18,21 +19,6 @@ struct script_memory_struct{
 };
 
 struct script_memory_struct scriptshellmemory[MEM_SIZE];
-
-struct script_pcb{
-    int pid;
-    int start;
-    size_t size;
-    int cur_instruct;
-
-    struct script_pcb *next_pcb;
-};
-
-struct ready_queue{
-    struct script_pcb *head_ptr;
-};
-
-struct ready_queue main_queue = {0};
 
 // Helper functions
 int match(char *model, char *var) {
@@ -119,12 +105,20 @@ int alloc_lines(int num_lines){
 
 //Frees num_lines of memory starting from index start from shell memory.
 void free_memory(int start, int num_lines){
-    if (start < 0 || num_lines < 1 || start + num_lines >= MEM_SIZE) return;
+    if (start < 0 || num_lines < 1 || start + num_lines > MEM_SIZE) return;
 
     for (int i = start; i < start + num_lines; i++){
         scriptshellmemory[i].used = 0; 
+        scriptshellmemory[i].line[0] = '\0';
     }
 }
+
+//Frees all memory associated with a finished script pcb.
+void free_mem(struct script_pcb *pcb_ptr){
+    free_memory(pcb_ptr->start, pcb_ptr->size);
+    free(pcb_ptr);
+}
+
 
 //Adds a process to the process queue, returns the memory location of the start if successful.
 int add_process(char **line_list, int num_lines){
@@ -138,7 +132,7 @@ int add_process(char **line_list, int num_lines){
         strcpy(scriptshellmemory[i].line, line_list[i-mem_start]);
     }
 
-    struct script_pcb *new_pcb = malloc(sizeof *new_pcb);
+    struct script_pcb *new_pcb = malloc(sizeof *new_pcb); //NOTE: Must free this.
     *new_pcb = (struct script_pcb){0};
 
     new_pcb->pid = pid_counter;
@@ -146,7 +140,7 @@ int add_process(char **line_list, int num_lines){
 
     new_pcb->start = mem_start;
     new_pcb->size = (size_t) num_lines;
-    new_pcb->cur_instruct = 0;
+    new_pcb->cur_instruct = mem_start;
 
     if (main_queue.head_ptr == NULL){
         main_queue.head_ptr = new_pcb;
@@ -163,3 +157,16 @@ int add_process(char **line_list, int num_lines){
 
     return mem_start;
 }
+
+//Returns a pointer to the instruction located at index mem_idx in scriptshellmemory.
+char* get_instruction(int mem_idx){
+    struct script_memory_struct *script_mem = &scriptshellmemory[mem_idx];
+
+    if (script_mem->used == 0){
+        printf("Error: script memory at location %d is unused.", mem_idx);
+        return NULL;
+    }
+
+    return script_mem->line;
+}
+

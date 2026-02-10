@@ -2,11 +2,41 @@
 #include <stdlib.h>
 #include <string.h> 
 #include <unistd.h>
+#include <pthread.h>
 #include "shell.h"
 #include "interpreter.h"
 #include "shellmemory.h"
 
 int parseInput(char ui[]);
+
+//Global queue for all processes.
+struct ready_queue main_queue = {0};
+
+//Thread that executes processes in the ready queue depending on scheduling policy.
+void* start_script_execution_thread(void* args){
+    while (1){
+        if (main_queue.head_ptr != NULL){
+            struct script_pcb *head_pcb = main_queue.head_ptr;
+            int start_idx = head_pcb->start;
+            int end_idx = start_idx + head_pcb->size;
+
+            for (int idx = start_idx; idx < end_idx; idx++){
+                char* cur_instruct = get_instruction(idx);
+                int errCode = parseInput(cur_instruct);
+
+                if (errCode != 0){
+                    printf("Error with executing instruction: %s\n", cur_instruct);
+                }
+
+                head_pcb->cur_instruct++;
+            }
+            free_mem(head_pcb);
+            main_queue.head_ptr = (main_queue.head_ptr)->next_pcb;
+        }
+        sleep(5);
+    }
+    
+}
 
 // Start of everything
 int main(int argc, char *argv[]) {
@@ -21,6 +51,10 @@ int main(int argc, char *argv[]) {
         userInput[i] = '\0';
     }
     
+    pthread_t script_execution_thread;
+
+    pthread_create(&script_execution_thread, NULL, start_script_execution_thread, NULL);
+
     //init shell memory
     mem_init();
     while(1) {				
@@ -38,6 +72,8 @@ int main(int argc, char *argv[]) {
         if (errorCode == -1) exit(99);	// ignore all other errors
         memset(userInput, 0, sizeof(userInput));
     }
+
+    pthread_join(script_execution_thread, NULL);
 
     return 0;
 }

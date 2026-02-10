@@ -179,6 +179,9 @@ int source(char *script) {
         printf("Error: Out of memory.\n");
         return 1;
     }
+    else{
+        printf("Proccess successfully added to queue at mem_location %d\n", start_idx);
+    }
     
     return 0;
 }
