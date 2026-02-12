@@ -3,8 +3,8 @@
 #include <stdio.h>
 #include <unistd.h>
 #include "shellmemory.h"
+#include "executor.h"
 
-int pid_counter = 0;
 
 struct memory_struct {
     char *var;
@@ -104,7 +104,7 @@ int alloc_lines(int num_lines){
 }
 
 //Frees num_lines of memory starting from index start from shell memory.
-void free_memory(int start, int num_lines){
+void free_script_memory(int start, int num_lines){
     if (start < 0 || num_lines < 1 || start + num_lines > MEM_SIZE) return;
 
     for (int i = start; i < start + num_lines; i++){
@@ -113,15 +113,9 @@ void free_memory(int start, int num_lines){
     }
 }
 
-//Frees all memory associated with a finished script pcb.
-void free_mem(struct script_pcb *pcb_ptr){
-    free_memory(pcb_ptr->start, pcb_ptr->size);
-    free(pcb_ptr);
-}
 
-
-//Adds a process to the process queue, returns the memory location of the start if successful.
-int add_process(char **line_list, int num_lines){
+//Adds a process to the script memory, returns the memory location of the start if successful. Depending on policy, will also add by line length.
+int add_process_to_memory(char **line_list, int num_lines){
     int mem_start = alloc_lines(num_lines);
 
     if (mem_start == -1) return -1;
@@ -130,29 +124,6 @@ int add_process(char **line_list, int num_lines){
     for (int i = mem_start; i < mem_start + num_lines; i++){
         scriptshellmemory[i].used = 1;
         strcpy(scriptshellmemory[i].line, line_list[i-mem_start]);
-    }
-
-    struct script_pcb *new_pcb = malloc(sizeof *new_pcb); //NOTE: Must free this.
-    *new_pcb = (struct script_pcb){0};
-
-    new_pcb->pid = pid_counter;
-    pid_counter++;
-
-    new_pcb->start = mem_start;
-    new_pcb->size = (size_t) num_lines;
-    new_pcb->cur_instruct = mem_start;
-
-    if (main_queue.head_ptr == NULL){
-        main_queue.head_ptr = new_pcb;
-    }
-    else{
-        struct script_pcb *cur_head = main_queue.head_ptr;
-
-        while (cur_head->next_pcb != NULL){
-            cur_head = cur_head->next_pcb;
-        }
-
-        cur_head->next_pcb = new_pcb;
     }
 
     return mem_start;

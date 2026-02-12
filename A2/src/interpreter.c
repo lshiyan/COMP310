@@ -4,14 +4,17 @@
 #include <dirent.h>
 #include <sys/wait.h>
 #include "shellmemory.h"
+#include "executor.h"
 #include "shell.h"
 #include <sys/stat.h>
 #include <ctype.h>
 #include <unistd.h>
 
-int MAX_ARGS_SIZE = 3;
+int MAX_ARGS_SIZE = 10;
 int MAX_DIR_SIZE = 256;
 int MAX_FILENAME_SIZE = 128;
+int pid_counter = 0;
+
 int badcommand() {
     printf("Unknown Command\n");
     return 1;
@@ -34,6 +37,8 @@ int my_mkdir(char *dirname);
 int my_touch(char *filename);
 int my_cd(char *dirname);
 int run(char *command_args[], int args_size);
+int exec(char *command_args[], int args_size);
+int validate_exec_args(char *command_args[], int args_size);
 int badcommandFileDoesNotExist();
 
 // Interpret commands and their arguments
@@ -108,8 +113,28 @@ int interpreter(char *command_args[], int args_size) {
         if (args_size < 2)
             return badcommand();
         return run(command_args, args_size);
-    }   
+    } else if (strcmp(command_args[0], "exec") == 0) {
+        //exec
+        if (validate_exec_args(command_args, args_size) == 0)
+            return badcommand();
+        return exec(command_args, args_size);
+    }
     else {return badcommand();}
+}
+
+//Returns 1 if valid exec argument.
+int validate_exec_args(char *command_args[], int args_size){
+    if (args_size < 3 || args_size > 5){
+        return 0;
+    }
+
+    char* policy = command_args[args_size - 1];
+
+    if (strcmp(policy, "FCFS") != 0 && strcmp(policy, "SJF") != 0 && strcmp(policy, "RR") != 0 && strcmp(policy, "AGING") != 0){
+        return 0;
+    }
+
+    return 1;
 }
 
 int help() {
@@ -151,39 +176,17 @@ int print(char *var) {
 
 int source(char *script) {
     int errCode = 0;
-    char *line_list[MEM_SIZE];
-    char line[MAX_USER_INPUT];
-    int num_lines = 0;
-    FILE *p = fopen(script, "rt");      // the program is in a file
+    char *command_args[3];
+    command_args[0] = "exec";
+    command_args[1] = strdup(script);
+    command_args[2] = "FCFS";
 
-    if (p == NULL) {
-        return badcommandFileDoesNotExist();
-    }
+    errCode = exec(command_args, 3);
 
-    fgets(line, MAX_USER_INPUT - 1, p);
-    while (1) {
-        line_list[num_lines] = malloc(strlen(line) + 1);
-        strcpy(line_list[num_lines], line);
-        num_lines++;
+    free(command_args[1]);
 
-        if (feof(p)) {
-            break;
-        }
-        fgets(line, MAX_USER_INPUT - 1, p);
-    }
-
-    fclose(p);
-
-    int start_idx = add_process(line_list, num_lines);
-    if (start_idx == -1) {
-        printf("Error: Out of memory.\n");
-        return 1;
-    }
-    else{
-        printf("Proccess successfully added to queue at mem_location %d\n", start_idx);
-    }
     
-    return 0;
+    return errCode;
 }
 
 int echo(char *string){
@@ -364,4 +367,55 @@ int run(char *command_args[], int args_size){
     }
 
     return 1;
+}
+
+//Executes 1 - 3 scripts with a given policy. Creates an execution block, adds each script to shell memory, then creates a PCB for each script then adds it to block. 
+//Appends execution block to main execution queue.
+int exec(char *command_args[], int args_size){
+    char* policy = command_args[args_size - 1];
+    int errCode = 0;
+
+    struct execution_block *new_block = malloc(sizeof *new_block); //NOTE: Must free this.
+    *new_block = (struct execution_block){0};
+
+    new_block->block_policy = strdup(policy);
+
+    for (int i = 1; i < args_size - 1; i++){
+        char *line_list[MEM_SIZE];  
+        char line[MAX_USER_INPUT];
+        int num_lines = 0;
+        FILE *p = fopen(command_args[i], "rt");      // the program is in a file
+
+        if (p == NULL) {
+            return badcommandFileDoesNotExist();
+        }
+
+        fgets(line, MAX_USER_INPUT - 1, p);
+        while (1) {
+            line_list[num_lines] = malloc(strlen(line) + 1);
+            strcpy(line_list[num_lines], line);
+            num_lines++;
+
+            if (feof(p)) {
+                break;
+            }
+            fgets(line, MAX_USER_INPUT - 1, p);
+        }
+
+        fclose(p);
+
+        int start_idx = add_process_to_memory(line_list, num_lines);
+        if (start_idx == -1) {
+            printf("Error: Out of memory.\n");
+            return 1;
+        }
+        else{
+            printf("Proccess successfully added to queue at mem_location %d\n", start_idx);
+            add_process_to_block(line_list, new_block, policy, start_idx, num_lines, &pid_counter);
+        }
+    }
+
+    errCode = exec_block(new_block);
+
+    return errCode;
 }
