@@ -130,7 +130,7 @@ int validate_exec_args(char *command_args[], int args_size){
 
     char* policy = command_args[args_size - 1];
 
-    if (strcmp(policy, "FCFS") != 0 && strcmp(policy, "SJF") != 0 && strcmp(policy, "RR") != 0 && strcmp(policy, "AGING") != 0){
+    if (strcmp(policy, "FCFS") != 0 && strcmp(policy, "SJF") != 0 && strcmp(policy, "RR") != 0 && strcmp(policy, "AGING") != 0 && strcmp(policy, "RR30") != 0){
         return 0;
     }
 
@@ -418,6 +418,7 @@ int exec(char *command_args[], int args_size){
     }
 
     errCode = exec_block(new_block);
+    printf("Processes executed with errCode %d\n", errCode);
 
     return errCode;
 }

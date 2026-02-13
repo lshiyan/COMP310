@@ -5,8 +5,8 @@
 #include <stdio.h>
 
 #define min(a, b) (((a) < (b)) ? (a) : (b))
+#define max(a, b) (((a) < (b)) ? (b) : (a))
 
-int RR_TIME = 2;
 int exec_fcfs_block(struct execution_block *block_ptr);
 int exec_rr_block(struct execution_block *block_ptr);
 int exec_aging_block(struct execution_block *block_ptr);
@@ -69,7 +69,7 @@ int exec_block(struct execution_block *block_ptr){
         errCode = exec_fcfs_block(block_ptr);
     }
 
-    else if (strcmp(policy, "RR") == 0){
+    else if (strcmp(policy, "RR") == 0 || strcmp(policy, "RR30") == 0){
         errCode = exec_rr_block(block_ptr);
     }
 
@@ -112,7 +112,8 @@ int exec_rr_block(struct execution_block *block_ptr){
     struct script_pcb *ptr = block_ptr->head_ptr;
     int errCode = 0;
     int processes_completed = 0;
-    
+    int RR_TIME = strcmp(block_ptr->block_policy, "RR") == 0 ?  2 : 30;
+
     while (processes_completed != block_ptr->num_processes){
         int start = ptr->cur_instruct;
         int end = min(ptr->cur_instruct + RR_TIME, ptr->start + ptr->size);
@@ -141,9 +142,76 @@ int exec_rr_block(struct execution_block *block_ptr){
     return errCode;
 }
 
+//Executes a block with the aging policy.
 int exec_aging_block(struct execution_block *block_ptr){
-    //TODO
-    return 0;
+    struct script_pcb *ptr = block_ptr->head_ptr;
+    int errCode = 0;
+
+    struct script_pcb *pcb_list[block_ptr->num_processes];
+    int finished[block_ptr->num_processes];
+    memset(finished, 0, sizeof(finished));
+    int idx = 0;
+
+    while (ptr != NULL){
+        pcb_list[idx] = ptr;
+        ptr = ptr->next_pcb;
+        idx++;
+    }
+
+    int completed_processes = 0;
+    int last_idx = -1;
+
+    while(completed_processes < block_ptr->num_processes){
+
+        int min_job = 10000;
+        int min_idx = 0;
+
+
+        //First find the minimum job length process.
+        for (int i = 0; i < block_ptr->num_processes; i++){
+            if (finished[i]) continue;
+
+            int l = pcb_list[i]->job_length;
+
+            if (l < min_job) {
+                min_job = l;
+                min_idx = i;
+            } else if (l == min_job) { //Tiebreaks in favor of last_executed job.
+                if (i == last_idx) {
+                    min_idx = i;
+                }
+            }
+        }
+
+        //Execute one instruction for the lowest length job.            
+        ptr = pcb_list[min_idx];
+
+        char *next_instruct = get_instruction(ptr->cur_instruct);
+
+        int err = parseInput(next_instruct);
+
+        if (err != 0){
+            errCode = 1;
+        }
+
+        (ptr->cur_instruct)++;
+
+        //Age all the jobs that are not the current job.
+        for (int i = 0; i < block_ptr->num_processes; i++){
+            if (i != min_idx && !finished[i]){
+                pcb_list[i]->job_length = max(0, pcb_list[i]->job_length - 1);
+            }
+        }
+
+        //If this job just finished, set the finished value to 1.
+        if (ptr->cur_instruct == ptr->start + ptr->size){
+            finished[min_idx] = 1;
+            completed_processes++;
+        }
+    }   
+
+    free_block(block_ptr);
+    return errCode;    
 }
 
 //Frees memory from all elements in block, including script memory.
