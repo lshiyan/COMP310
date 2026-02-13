@@ -4,9 +4,13 @@
 #include <string.h>
 #include <stdio.h>
 
+#define min(a, b) (((a) < (b)) ? (a) : (b))
+
+int RR_TIME = 2;
 int exec_fcfs_block(struct execution_block *block_ptr);
 int exec_rr_block(struct execution_block *block_ptr);
 int exec_aging_block(struct execution_block *block_ptr);
+void free_block(struct execution_block *block_ptr);
 
 //Adds a given process to an execution block. Creates a new PCB for the process then appends it to the tail of the block.
 void add_process_to_block(char **line_list, struct execution_block *block, char *policy, int mem_start, int num_lines, int* pid_counter){
@@ -80,32 +84,82 @@ int exec_block(struct execution_block *block_ptr){
     return errCode;
 }
 
+//Executes a block with the FCFS / SJF policy.
 int exec_fcfs_block(struct execution_block *block_ptr){
-    struct script_pcb *head_pcb = block_ptr->head_ptr;
+    struct script_pcb *ptr = block_ptr->head_ptr;
     int errCode = 0;
-    while (1){
-        int start = head_pcb->start;
-        int end = start + head_pcb->size;
+    while (ptr != NULL){
+        int start = ptr->start;
+        int end = start + ptr->size;
 
         for (int mem_idx = start; mem_idx < end; mem_idx++){
             char* cur_instruct = get_instruction(mem_idx);
-            printf("%s\n", cur_instruct);
             int err = parseInput(cur_instruct); 
             if (err != 0){
                 errCode = 1;
             }
         }
 
-        return 0;
+        ptr = ptr->next_pcb;
     }
+
+    free_block(block_ptr);
+    return errCode;
 }
 
+//Executes a block with the RR policy.
 int exec_rr_block(struct execution_block *block_ptr){
-    //TODO
-    return 0;
+    struct script_pcb *ptr = block_ptr->head_ptr;
+    int errCode = 0;
+    int processes_completed = 0;
+    
+    while (processes_completed != block_ptr->num_processes){
+        int start = ptr->cur_instruct;
+        int end = min(ptr->cur_instruct + RR_TIME, ptr->start + ptr->size);
+
+        for (int mem_idx = start; mem_idx < end; mem_idx++){
+            char* cur_instruct = get_instruction(mem_idx);
+            int err = parseInput(cur_instruct); 
+            if (err != 0){
+                errCode = 1;
+            }
+            (ptr->cur_instruct)++;
+            if (ptr->cur_instruct == ptr->start + ptr->size){
+                processes_completed++;
+            }
+        }
+        
+        if (ptr->next_pcb == NULL){
+            ptr = block_ptr->head_ptr;
+        }
+        else{
+            ptr = ptr->next_pcb;
+        }
+    }
+
+    free_block(block_ptr);
+    return errCode;
 }
 
 int exec_aging_block(struct execution_block *block_ptr){
     //TODO
     return 0;
+}
+
+//Frees memory from all elements in block, including script memory.
+void free_block(struct execution_block *block_ptr){
+
+    struct script_pcb *pcb = block_ptr->head_ptr;
+
+    while (pcb != NULL)
+    {
+        struct script_pcb *next_pcb = pcb->next_pcb;
+        free_script_memory(pcb->start, pcb->size);
+        free(pcb);
+        pcb = next_pcb;
+    }
+
+    free(block_ptr->block_policy);
+
+    free(block_ptr);
 }

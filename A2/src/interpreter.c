@@ -379,8 +379,10 @@ int exec(char *command_args[], int args_size){
     *new_block = (struct execution_block){0};
 
     new_block->block_policy = strdup(policy);
+    new_block->num_processes = 0;
 
     for (int i = 1; i < args_size - 1; i++){
+        (new_block->num_processes)++;
         char *line_list[MEM_SIZE];  
         char line[MAX_USER_INPUT];
         int num_lines = 0;

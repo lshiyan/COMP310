@@ -12,8 +12,8 @@ struct script_pcb{
 
 struct execution_block{ //Consists of a block of pcbs with a singular policy to execute.
     struct script_pcb *head_ptr;
-    struct execution_block *next_block;
 
+    int num_processes;
     char* block_policy;
 };
 
