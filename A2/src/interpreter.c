@@ -412,13 +412,13 @@ int exec(char *command_args[], int args_size){
             return 1;
         }
         else{
-            printf("Proccess successfully added to queue at mem_location %d\n", start_idx);
+            //printf("Proccess successfully added to queue at mem_location %d\n", start_idx);
             add_process_to_block(line_list, new_block, policy, start_idx, num_lines, &pid_counter);
         }
     }
 
     errCode = exec_block(new_block);
-    printf("Processes executed with errCode %d\n", errCode);
+    //printf("Processes executed with errCode %d\n", errCode);
 
     return errCode;
 }

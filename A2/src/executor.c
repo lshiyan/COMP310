@@ -30,7 +30,7 @@ void add_process_to_block(char **line_list, struct execution_block *block, char 
         block->head_ptr = new_pcb;
     }
     else{
-        if (strcmp(policy, "FCFS") == 0 || strcmp(policy, "RR") == 0){ //Do not need to sort for these policies
+        if (strcmp(policy, "FCFS") == 0 || strcmp(policy, "RR") == 0 || strcmp(policy, "AGING") == 0){ // Keep original arrival order for these policies.
             struct script_pcb *cur_head = block->head_ptr;
 
             while (cur_head->next_pcb != NULL){
@@ -42,12 +42,12 @@ void add_process_to_block(char **line_list, struct execution_block *block, char 
         else{ //Need to sort for these policies.
             struct script_pcb *cur_head = block->head_ptr;
 
-            if (cur_head->job_length >= new_pcb->job_length){ //New process is shortest, add to head.
+            if (cur_head->job_length > new_pcb->job_length){ //New process is shortest, add to head.
                 new_pcb->next_pcb = cur_head;
                 block->head_ptr = new_pcb;
             }
             else{
-                while(cur_head->next_pcb != NULL && (cur_head->next_pcb)->job_length < new_pcb->job_length){ // Stop when next pcb is NULL or next pcb has a greater job length.
+                while(cur_head->next_pcb != NULL && (cur_head->next_pcb)->job_length <= new_pcb->job_length){ // Stop when next pcb is NULL or next pcb has a greater job length.
                     cur_head = cur_head->next_pcb;
                 }
 
@@ -159,7 +159,7 @@ int exec_aging_block(struct execution_block *block_ptr){
     }
 
     int completed_processes = 0;
-    int last_idx = -1;
+    int last_idx = 0;
 
     while(completed_processes < block_ptr->num_processes){
 
@@ -182,6 +182,7 @@ int exec_aging_block(struct execution_block *block_ptr){
                 }
             }
         }
+        last_idx = min_idx;
 
         //Execute one instruction for the lowest length job.            
         ptr = pcb_list[min_idx];
