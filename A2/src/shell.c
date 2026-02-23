@@ -42,6 +42,8 @@ int main(int argc, char *argv[]) {
         memset(userInput, 0, sizeof(userInput));
     }
 
+    run_pending_background();
+
     return 0;
 }
 

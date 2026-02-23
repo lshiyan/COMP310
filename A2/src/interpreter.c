@@ -14,6 +14,7 @@ int MAX_ARGS_SIZE = 10;
 int MAX_DIR_SIZE = 256;
 int MAX_FILENAME_SIZE = 128;
 int pid_counter = 0;
+static struct execution_block *pending_background_block = NULL;
 
 int badcommand() {
     printf("Unknown Command\n");
@@ -40,6 +41,7 @@ int run(char *command_args[], int args_size);
 int exec(char *command_args[], int args_size);
 int validate_exec_args(char *command_args[], int args_size);
 int badcommandFileDoesNotExist();
+void append_block_processes(struct execution_block *dst, struct execution_block *src);
 
 // Interpret commands and their arguments
 int interpreter(char *command_args[], int args_size) {
@@ -124,11 +126,19 @@ int interpreter(char *command_args[], int args_size) {
 
 //Returns 1 if valid exec argument.
 int validate_exec_args(char *command_args[], int args_size){
-    if (args_size < 3 || args_size > 5){
+    if (args_size < 3 || args_size > 6){
         return 0;
     }
 
-    char* policy = command_args[args_size - 1];
+    int has_background = strcmp(command_args[args_size - 1], "#") == 0;
+    int policy_idx = has_background ? args_size - 2 : args_size - 1;
+    int num_programs = policy_idx - 1;
+
+    if (num_programs < 1 || num_programs > 3){
+        return 0;
+    }
+
+    char* policy = command_args[policy_idx];
 
     if (strcmp(policy, "FCFS") != 0 && strcmp(policy, "SJF") != 0 && strcmp(policy, "RR") != 0 && strcmp(policy, "AGING") != 0 && strcmp(policy, "RR30") != 0){
         return 0;
@@ -372,7 +382,9 @@ int run(char *command_args[], int args_size){
 //Executes 1 - 3 scripts with a given policy. Creates an execution block, adds each script to shell memory, then creates a PCB for each script then adds it to block. 
 //Appends execution block to main execution queue.
 int exec(char *command_args[], int args_size){
-    char* policy = command_args[args_size - 1];
+    int has_background = strcmp(command_args[args_size - 1], "#") == 0;
+    int policy_idx = has_background ? args_size - 2 : args_size - 1;
+    char* policy = command_args[policy_idx];
     int errCode = 0;
 
     struct execution_block *new_block = malloc(sizeof *new_block); //NOTE: Must free this.
@@ -381,7 +393,7 @@ int exec(char *command_args[], int args_size){
     new_block->block_policy = strdup(policy);
     new_block->num_processes = 0;
 
-    for (int i = 1; i < args_size - 1; i++){
+    for (int i = 1; i < policy_idx; i++){
         (new_block->num_processes)++;
         char *line_list[MEM_SIZE];  
         char line[MAX_USER_INPUT];
@@ -417,8 +429,65 @@ int exec(char *command_args[], int args_size){
         }
     }
 
-    errCode = exec_block(new_block);
-    //printf("Processes executed with errCode %d\n", errCode);
+    if (has_background){
+        if (pending_background_block == NULL){
+            pending_background_block = new_block;
+        } else if (strcmp(pending_background_block->block_policy, new_block->block_policy) == 0){
+            append_block_processes(pending_background_block, new_block);
+            free(new_block->block_policy);
+            free(new_block);
+        } else {
+            errCode = exec_block(pending_background_block);
+            pending_background_block = new_block;
+        }
+        return errCode;
+    }
 
+    if (pending_background_block != NULL){
+        if (strcmp(pending_background_block->block_policy, new_block->block_policy) == 0){
+            append_block_processes(pending_background_block, new_block);
+            free(new_block->block_policy);
+            free(new_block);
+            errCode = exec_block(pending_background_block);
+            pending_background_block = NULL;
+        } else {
+            errCode = exec_block(pending_background_block);
+            pending_background_block = NULL;
+            if (exec_block(new_block) != 0){
+                errCode = 1;
+            }
+        }
+    } else {
+        errCode = exec_block(new_block);
+    }
+
+    return errCode;
+}
+
+void append_block_processes(struct execution_block *dst, struct execution_block *src){
+    if (src->head_ptr == NULL){
+        return;
+    }
+
+    if (dst->head_ptr == NULL){
+        dst->head_ptr = src->head_ptr;
+    } else {
+        struct script_pcb *tail = dst->head_ptr;
+        while (tail->next_pcb != NULL){
+            tail = tail->next_pcb;
+        }
+        tail->next_pcb = src->head_ptr;
+    }
+
+    dst->num_processes += src->num_processes;
+}
+
+int run_pending_background(){
+    if (pending_background_block == NULL){
+        return 0;
+    }
+
+    int errCode = exec_block(pending_background_block);
+    pending_background_block = NULL;
     return errCode;
 }
