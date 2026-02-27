@@ -9,12 +9,24 @@
 #include <sys/stat.h>
 #include <ctype.h>
 #include <unistd.h>
+#include <pthread.h>
+
+#define min(a, b) (((a) < (b)) ? (a) : (b))
 
 int MAX_ARGS_SIZE = 10;
 int MAX_DIR_SIZE = 256;
 int MAX_FILENAME_SIZE = 128;
 int pid_counter = 0;
 static struct execution_block *pending_background_block = NULL;
+static int mt_enabled = 0;
+static pthread_t mt_workers[2];
+static int mt_workers_started = 0;
+static int mt_shutdown = 0;
+static struct script_pcb *mt_ready_head = NULL;
+static struct script_pcb *mt_ready_tail = NULL;
+static int mt_active_processes = 0;
+static pthread_mutex_t mt_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t mt_cv = PTHREAD_COND_INITIALIZER;
 
 int badcommand() {
     printf("Unknown Command\n");
@@ -42,6 +54,9 @@ int exec(char *command_args[], int args_size);
 int validate_exec_args(char *command_args[], int args_size);
 int badcommandFileDoesNotExist();
 void append_block_processes(struct execution_block *dst, struct execution_block *src);
+void start_mt_workers();
+void enqueue_mt_block(struct execution_block *block_ptr);
+void *mt_worker_loop(void *arg);
 
 // Interpret commands and their arguments
 int interpreter(char *command_args[], int args_size) {
@@ -126,12 +141,17 @@ int interpreter(char *command_args[], int args_size) {
 
 //Returns 1 if valid exec argument.
 int validate_exec_args(char *command_args[], int args_size){
-    if (args_size < 3 || args_size > 6){
+    if (args_size < 3 || args_size > 7){
         return 0;
     }
 
-    int has_background = strcmp(command_args[args_size - 1], "#") == 0;
-    int policy_idx = has_background ? args_size - 2 : args_size - 1;
+    int has_mt = strcmp(command_args[args_size - 1], "MT") == 0;
+    int parse_end = has_mt ? args_size - 2 : args_size - 1;
+    if (parse_end < 2){
+        return 0;
+    }
+    int has_background = strcmp(command_args[parse_end], "#") == 0;
+    int policy_idx = has_background ? parse_end - 1 : parse_end;
     int num_programs = policy_idx - 1;
 
     if (num_programs < 1 || num_programs > 3){
@@ -162,6 +182,18 @@ source SCRIPT.TXT	Executes the file SCRIPT.TXT\n ";
 
 int quit() {
     printf("Bye!\n");
+
+    if (mt_workers_started){
+        pthread_mutex_lock(&mt_lock);
+        mt_shutdown = 1;
+        pthread_cond_broadcast(&mt_cv);
+        pthread_mutex_unlock(&mt_lock);
+
+        for (int i = 0; i < 2; i++){
+            pthread_join(mt_workers[i], NULL);
+        }
+    }
+
     exit(0);
 }
 
@@ -200,6 +232,7 @@ int source(char *script) {
 }
 
 int echo(char *string){
+    const char *out = string;
     if (string[0] == '$') {
         char tmp[100] = "";
 
@@ -210,15 +243,12 @@ int echo(char *string){
         char* mem_result = mem_get_value(tmp);
 
         if (strcmp(mem_result, INVALID_STRING) == 0){
-            mem_result = "";
+            out = "";
+        } else {
+            out = mem_result;
         }
-        printf("%s", mem_result);
-        printf("\n");
     }
-    else{
-        printf("%s", string);
-        printf("\n");
-    }
+    printf("%s\n", out);
     return 0;
 }
 
@@ -382,10 +412,16 @@ int run(char *command_args[], int args_size){
 //Executes 1 - 3 scripts with a given policy. Creates an execution block, adds each script to shell memory, then creates a PCB for each script then adds it to block. 
 //Appends execution block to main execution queue.
 int exec(char *command_args[], int args_size){
-    int has_background = strcmp(command_args[args_size - 1], "#") == 0;
-    int policy_idx = has_background ? args_size - 2 : args_size - 1;
+    int has_mt = strcmp(command_args[args_size - 1], "MT") == 0;
+    int parse_end = has_mt ? args_size - 2 : args_size - 1;
+    int has_background = strcmp(command_args[parse_end], "#") == 0;
+    int policy_idx = has_background ? parse_end - 1 : parse_end;
     char* policy = command_args[policy_idx];
     int errCode = 0;
+
+    if (has_mt){
+        mt_enabled = 1;
+    }
 
     struct execution_block *new_block = malloc(sizeof *new_block); //NOTE: Must free this.
     *new_block = (struct execution_block){0};
@@ -427,6 +463,14 @@ int exec(char *command_args[], int args_size){
             //printf("Proccess successfully added to queue at mem_location %d\n", start_idx);
             add_process_to_block(line_list, new_block, policy, start_idx, num_lines, &pid_counter);
         }
+    }
+
+    if (mt_enabled && (strcmp(policy, "RR") == 0 || strcmp(policy, "RR30") == 0)){
+        start_mt_workers();
+        enqueue_mt_block(new_block);
+        free(new_block->block_policy);
+        free(new_block);
+        return 0;
     }
 
     if (has_background){
@@ -490,4 +534,94 @@ int run_pending_background(){
     int errCode = exec_block(pending_background_block);
     pending_background_block = NULL;
     return errCode;
+}
+
+void start_mt_workers(){
+    if (mt_workers_started){
+        return;
+    }
+
+    mt_shutdown = 0;
+    for (int i = 0; i < 2; i++){
+        pthread_create(&mt_workers[i], NULL, mt_worker_loop, NULL);
+    }
+    mt_workers_started = 1;
+}
+
+void enqueue_mt_block(struct execution_block *block_ptr){
+    if (block_ptr->head_ptr == NULL){
+        return;
+    }
+
+    struct script_pcb *new_head = block_ptr->head_ptr;
+    struct script_pcb *new_tail = new_head;
+    while (new_tail->next_pcb != NULL){
+        new_tail = new_tail->next_pcb;
+    }
+
+    pthread_mutex_lock(&mt_lock);
+    if (mt_ready_tail == NULL){
+        mt_ready_head = new_head;
+        mt_ready_tail = new_tail;
+    } else {
+        mt_ready_tail->next_pcb = new_head;
+        mt_ready_tail = new_tail;
+    }
+    mt_active_processes += block_ptr->num_processes;
+    pthread_cond_broadcast(&mt_cv);
+    pthread_mutex_unlock(&mt_lock);
+}
+
+void *mt_worker_loop(void *arg){
+    (void)arg;
+    int errCode = 0;
+
+    while (1){
+        pthread_mutex_lock(&mt_lock);
+        while (mt_ready_head == NULL && !(mt_shutdown && mt_active_processes == 0)){
+            pthread_cond_wait(&mt_cv, &mt_lock);
+        }
+
+        if (mt_ready_head == NULL && mt_shutdown && mt_active_processes == 0){
+            pthread_mutex_unlock(&mt_lock);
+            break;
+        }
+
+        struct script_pcb *pcb = mt_ready_head;
+        mt_ready_head = pcb->next_pcb;
+        if (mt_ready_head == NULL){
+            mt_ready_tail = NULL;
+        }
+        pcb->next_pcb = NULL;
+        pthread_mutex_unlock(&mt_lock);
+
+        int end = min(pcb->cur_instruct + pcb->quantum, pcb->start + (int)pcb->size);
+        for (int i = pcb->cur_instruct; i < end; i++){
+            char *cur_instruct = get_instruction(i);
+            int err = parseInput(cur_instruct);
+            if (err != 0){
+                errCode = 1;
+            }
+            pcb->cur_instruct++;
+        }
+
+        pthread_mutex_lock(&mt_lock);
+        if (pcb->cur_instruct >= pcb->start + (int)pcb->size){
+            mt_active_processes--;
+            free_script_memory(pcb->start, pcb->size);
+            free(pcb);
+        } else {
+            if (mt_ready_tail == NULL){
+                mt_ready_head = pcb;
+                mt_ready_tail = pcb;
+            } else {
+                mt_ready_tail->next_pcb = pcb;
+                mt_ready_tail = pcb;
+            }
+        }
+        pthread_cond_broadcast(&mt_cv);
+        pthread_mutex_unlock(&mt_lock);
+    }
+
+    return (void *)(long)errCode;
 }

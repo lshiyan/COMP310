@@ -25,6 +25,7 @@ void add_process_to_block(char **line_list, struct execution_block *block, char 
     new_pcb->size = (size_t) num_lines;
     new_pcb->cur_instruct = mem_start;
     new_pcb->job_length = num_lines;
+    new_pcb->quantum = strcmp(policy, "RR30") == 0 ? 30 : 2;
 
     if (block->head_ptr == NULL){
         block->head_ptr = new_pcb;

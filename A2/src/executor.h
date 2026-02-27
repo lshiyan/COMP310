@@ -6,6 +6,7 @@ struct script_pcb{
     size_t size;
     int cur_instruct;
     int job_length;
+    int quantum;
 
     struct script_pcb *next_pcb;
 };
