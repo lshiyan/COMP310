@@ -1,0 +1,627 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <dirent.h>
+#include <sys/wait.h>
+#include "shellmemory.h"
+#include "executor.h"
+#include "shell.h"
+#include <sys/stat.h>
+#include <ctype.h>
+#include <unistd.h>
+#include <pthread.h>
+
+#define min(a, b) (((a) < (b)) ? (a) : (b))
+
+int MAX_ARGS_SIZE = 10;
+int MAX_DIR_SIZE = 256;
+int MAX_FILENAME_SIZE = 128;
+int pid_counter = 0;
+static struct execution_block *pending_background_block = NULL;
+static int mt_enabled = 0;
+static pthread_t mt_workers[2];
+static int mt_workers_started = 0;
+static int mt_shutdown = 0;
+static struct script_pcb *mt_ready_head = NULL;
+static struct script_pcb *mt_ready_tail = NULL;
+static int mt_active_processes = 0;
+static pthread_mutex_t mt_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t mt_cv = PTHREAD_COND_INITIALIZER;
+
+int badcommand() {
+    printf("Unknown Command\n");
+    return 1;
+}
+
+// For source command only
+int badcommandFileDoesNotExist() {
+    printf("Bad command: File not found\n");
+    return 3;
+}
+
+int help();
+int quit();
+int set(char *var, char *value);
+int print(char *var);
+int source(char *script);
+int echo(char * string);
+int my_ls();
+int my_mkdir(char *dirname);
+int my_touch(char *filename);
+int my_cd(char *dirname);
+int run(char *command_args[], int args_size);
+int exec(char *command_args[], int args_size);
+int validate_exec_args(char *command_args[], int args_size);
+int badcommandFileDoesNotExist();
+void append_block_processes(struct execution_block *dst, struct execution_block *src);
+void start_mt_workers();
+void enqueue_mt_block(struct execution_block *block_ptr);
+void *mt_worker_loop(void *arg);
+
+// Interpret commands and their arguments
+int interpreter(char *command_args[], int args_size) {
+    int i;
+
+    if (args_size < 1 || args_size > MAX_ARGS_SIZE) {
+        return badcommand();
+    }
+
+    for (i = 0; i < args_size; i++) {   // terminate args at newlines
+        command_args[i][strcspn(command_args[i], "\r\n")] = 0;
+    }
+
+    if (strcmp(command_args[0], "help") == 0) {
+        //help
+        if (args_size != 1)
+            return badcommand();
+        return help();
+
+    } else if (strcmp(command_args[0], "quit") == 0) {
+        //quit
+        if (args_size != 1)
+            return badcommand();
+        return quit();
+
+    } else if (strcmp(command_args[0], "set") == 0) {
+        //set
+        if (args_size != 3)
+            return badcommand();
+        return set(command_args[1], command_args[2]);
+
+    } else if (strcmp(command_args[0], "print") == 0) {
+        //print
+        if (args_size != 2)
+            return badcommand();
+        return print(command_args[1]);
+
+    } else if (strcmp(command_args[0], "source") == 0) {
+        //source
+        if (args_size != 2)
+            return badcommand();
+        return source(command_args[1]);
+
+    } else if (strcmp(command_args[0], "echo") == 0) {
+        //echo
+        if (args_size != 2)
+            return badcommand();
+        return echo(command_args[1]);
+    } else if (strcmp(command_args[0], "my_ls") == 0) {
+        //ls
+        if (args_size != 1)
+            return badcommand();
+        return my_ls();
+    } else if (strcmp(command_args[0], "my_mkdir") == 0) {
+        //mkdir
+        if (args_size != 2)
+            return badcommand();
+        return my_mkdir(command_args[1]);
+    } else if (strcmp(command_args[0], "my_touch") == 0) {
+        //touch
+        if (args_size != 2)
+            return badcommand();
+        return my_touch(command_args[1]);
+    } else if (strcmp(command_args[0], "my_cd") == 0) {
+        //cd
+        if (args_size != 2)
+            return badcommand();
+        return my_cd(command_args[1]);
+    } else if (strcmp(command_args[0], "run") == 0) {
+        //run
+        if (args_size < 2)
+            return badcommand();
+        return run(command_args, args_size);
+    } else if (strcmp(command_args[0], "exec") == 0) {
+        //exec
+        if (validate_exec_args(command_args, args_size) == 0)
+            return badcommand();
+        return exec(command_args, args_size);
+    }
+    else {return badcommand();}
+}
+
+//Returns 1 if valid exec argument.
+int validate_exec_args(char *command_args[], int args_size){
+    if (args_size < 3 || args_size > 7){
+        return 0;
+    }
+
+    int has_mt = strcmp(command_args[args_size - 1], "MT") == 0;
+    int parse_end = has_mt ? args_size - 2 : args_size - 1;
+    if (parse_end < 2){
+        return 0;
+    }
+    int has_background = strcmp(command_args[parse_end], "#") == 0;
+    int policy_idx = has_background ? parse_end - 1 : parse_end;
+    int num_programs = policy_idx - 1;
+
+    if (num_programs < 1 || num_programs > 3){
+        return 0;
+    }
+
+    char* policy = command_args[policy_idx];
+
+    if (strcmp(policy, "FCFS") != 0 && strcmp(policy, "SJF") != 0 && strcmp(policy, "RR") != 0 && strcmp(policy, "AGING") != 0 && strcmp(policy, "RR30") != 0){
+        return 0;
+    }
+
+    return 1;
+}
+
+int help() {
+
+    // note the literal tab characters here for alignment
+    char help_string[] = "COMMAND			DESCRIPTION\n \
+help			Displays all the commands\n \
+quit			Exits / terminates the shell with “Bye!”\n \
+set VAR STRING		Assigns a value to shell memory\n \
+print VAR		Displays the STRING assigned to VAR\n \
+source SCRIPT.TXT	Executes the file SCRIPT.TXT\n ";
+    printf("%s\n", help_string);
+    return 0;
+}
+
+int quit() {
+    printf("Bye!\n");
+
+    if (mt_workers_started){
+        pthread_mutex_lock(&mt_lock);
+        mt_shutdown = 1;
+        pthread_cond_broadcast(&mt_cv);
+        pthread_mutex_unlock(&mt_lock);
+
+        for (int i = 0; i < 2; i++){
+            pthread_join(mt_workers[i], NULL);
+        }
+    }
+
+    exit(0);
+}
+
+int set(char *var, char *value) {
+    // Challenge: allow setting VAR to the rest of the input line,
+    // possibly including spaces.
+
+    // Hint: Since "value" might contain multiple tokens, you'll need to loop
+    // through them, concatenate each token to the buffer, and handle spacing
+    // appropriately. Investigate how `strcat` works and how you can use it
+    // effectively here.
+
+    mem_set_value(var, value);
+    return 0;
+}
+
+
+int print(char *var) {
+    printf("%s\n", mem_get_value(var));
+    return 0;
+}
+
+int source(char *script) {
+    int errCode = 0;
+    char *command_args[3];
+    command_args[0] = "exec";
+    command_args[1] = strdup(script);
+    command_args[2] = "FCFS";
+
+    errCode = exec(command_args, 3);
+
+    free(command_args[1]);
+
+    
+    return errCode;
+}
+
+int echo(char *string){
+    const char *out = string;
+    if (string[0] == '$') {
+        char tmp[100] = "";
+
+        for (int i = 1; i < strlen(string); i++){
+            tmp[i-1] = string[i];
+        }
+        char* INVALID_STRING = "Variable does not exist";
+        char* mem_result = mem_get_value(tmp);
+
+        if (strcmp(mem_result, INVALID_STRING) == 0){
+            out = "";
+        } else {
+            out = mem_result;
+        }
+    }
+    printf("%s\n", out);
+    return 0;
+}
+
+//Helper function for string comparisons.
+int compare(const void *a, const void *b) {
+    const char *sa = (const char *)a;
+    const char *sb = (const char *)b;
+    return strcmp(sa, sb);
+}
+
+
+int my_ls(){
+    DIR *dirp;
+    struct dirent *entry;
+
+    char files[MAX_DIR_SIZE][MAX_FILENAME_SIZE];
+    dirp = opendir(".");
+
+    int i = 0;
+    while(1){
+        entry = readdir(dirp);
+
+        if (entry != NULL){
+            strcpy(files[i], entry->d_name);
+            i += 1;
+            continue;
+        }
+
+        break;
+    }
+
+    qsort(files, i, sizeof(files[0]), compare);
+    for (int j = 0; j < i; j++){
+        printf("%s\n", files[j]);
+    }
+
+    closedir(dirp);
+    return 0;
+}
+
+// helper: returns 1 if s is a non-empty string of only letter/number, else 0
+int alphanumeric(const char *s){
+    if (s == NULL || s[0] == '\0') return 0;
+
+    for (int i = 0; s[i] != '\0'; i++) {
+        if (!isalnum(s[i])) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+int my_mkdir(char *dirname){
+    const char *final_dir = NULL;
+
+    // Case 1: normal directory name
+    if (dirname[0] != '$') {
+        if (!alphanumeric(dirname)) {
+            printf("Bad command: my_mkdir\n");
+            return 1;
+        }
+        final_dir = dirname;
+    }
+    // Case 2: dirname starts with '$'
+    else {
+        const char *var = dirname + 1;   // skip '$'
+        // variable name after '$' must be alphanumeric
+        if (!alphanumeric(var)) {
+            printf("Bad command: my_mkdir\n");
+            return 1;
+        }
+        char* INVALID_STRING = "Variable does not exist";
+        char *val = mem_get_value((char*)var);
+        if (strcmp(val, INVALID_STRING) == 0){
+            printf("Bad command: my_mkdir\n");
+            return 1;
+        }
+        // value must be a single alphanumeric token too
+        if (!alphanumeric(val)) {
+            printf("Bad command: my_mkdir\n");
+            return 1;
+        }
+        final_dir = val;
+    }
+    // Try to create the directory
+    if (mkdir(final_dir, 0777) != 0) {
+        printf("Bad command: my_mkdir\n");
+        return 1;
+    }
+    return 0;
+}
+
+int my_touch(char *filename){
+    if (alphanumeric(filename)){
+        FILE *f = fopen(filename, "a");
+        fclose(f);
+    }
+    return 0;
+}
+
+int my_cd(char *dirname){
+    if (!alphanumeric(dirname)){
+        printf("Bad command: my_cd\n");
+        return 1;
+    }
+    // chdir(dirname) tries to move into dirname inside current directory
+    if (chdir(dirname) != 0) {
+        // directory doesn't exist or not accessible
+        printf("Bad command: my_cd\n");
+        return 1;
+    }
+    // success
+    return 0;
+}
+
+
+int run(char *command_args[], int args_size){
+    //Allocate space for command and command args.
+    const char* command = command_args[1];
+    char *args[args_size];
+
+    //Create full command filename
+    char full_command[100] = "/bin/";
+    strcat(full_command, command);
+
+    //Create execv args.
+    for (int i = 1; i < args_size; i++){
+        args[i - 1] = command_args[i];
+    }
+    args[args_size - 1] = NULL;
+
+    //Fork exec wait
+    pid_t pid = fork();
+
+    if (pid < 0)
+    {
+        perror("Fork failed\n");
+        return 1;
+    }
+    if (pid == 0){
+        execv(full_command, args);
+        perror("execv");
+        _exit(1);
+    }
+
+    int status;
+    //Check error for wait.
+    if (waitpid(pid, &status, 0) < 0) {
+        perror("waitpid");
+        return 1;
+    }
+
+    // Child process succeeded
+    if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+        return 0;
+    }
+
+    return 1;
+}
+
+//Executes 1 - 3 scripts with a given policy. Creates an execution block, adds each script to shell memory, then creates a PCB for each script then adds it to block. 
+//Appends execution block to main execution queue.
+int exec(char *command_args[], int args_size){
+    int has_mt = strcmp(command_args[args_size - 1], "MT") == 0;
+    int parse_end = has_mt ? args_size - 2 : args_size - 1;
+    int has_background = strcmp(command_args[parse_end], "#") == 0;
+    int policy_idx = has_background ? parse_end - 1 : parse_end;
+    char* policy = command_args[policy_idx];
+    int errCode = 0;
+
+    if (has_mt){
+        mt_enabled = 1;
+    }
+
+    struct execution_block *new_block = malloc(sizeof *new_block); //NOTE: Must free this.
+    *new_block = (struct execution_block){0};
+
+    new_block->block_policy = strdup(policy);
+    new_block->num_processes = 0;
+
+    for (int i = 1; i < policy_idx; i++){
+        (new_block->num_processes)++;
+        char *line_list[MEM_SIZE];  
+        char line[MAX_USER_INPUT];
+        int num_lines = 0;
+        FILE *p = fopen(command_args[i], "rt");      // the program is in a file
+
+        if (p == NULL) {
+            return badcommandFileDoesNotExist();
+        }
+
+        fgets(line, MAX_USER_INPUT - 1, p);
+        while (1) {
+            line_list[num_lines] = malloc(strlen(line) + 1);
+            strcpy(line_list[num_lines], line);
+            num_lines++;
+
+            if (feof(p)) {
+                break;
+            }
+            fgets(line, MAX_USER_INPUT - 1, p);
+        }
+
+        fclose(p);
+
+        int start_idx = add_process_to_memory(line_list, num_lines);
+        if (start_idx == -1) {
+            printf("Error: Out of memory.\n");
+            return 1;
+        }
+        else{
+            //printf("Proccess successfully added to queue at mem_location %d\n", start_idx);
+            add_process_to_block(line_list, new_block, policy, start_idx, num_lines, &pid_counter);
+        }
+    }
+
+    if (mt_enabled && (strcmp(policy, "RR") == 0 || strcmp(policy, "RR30") == 0)){
+        start_mt_workers();
+        enqueue_mt_block(new_block);
+        free(new_block->block_policy);
+        free(new_block);
+        return 0;
+    }
+
+    if (has_background){
+        if (pending_background_block == NULL){
+            pending_background_block = new_block;
+        } else if (strcmp(pending_background_block->block_policy, new_block->block_policy) == 0){
+            append_block_processes(pending_background_block, new_block);
+            free(new_block->block_policy);
+            free(new_block);
+        } else {
+            errCode = exec_block(pending_background_block);
+            pending_background_block = new_block;
+        }
+        return errCode;
+    }
+
+    if (pending_background_block != NULL){
+        if (strcmp(pending_background_block->block_policy, new_block->block_policy) == 0){
+            append_block_processes(pending_background_block, new_block);
+            free(new_block->block_policy);
+            free(new_block);
+            errCode = exec_block(pending_background_block);
+            pending_background_block = NULL;
+        } else {
+            errCode = exec_block(pending_background_block);
+            pending_background_block = NULL;
+            if (exec_block(new_block) != 0){
+                errCode = 1;
+            }
+        }
+    } else {
+        errCode = exec_block(new_block);
+    }
+
+    return errCode;
+}
+
+void append_block_processes(struct execution_block *dst, struct execution_block *src){
+    if (src->head_ptr == NULL){
+        return;
+    }
+
+    if (dst->head_ptr == NULL){
+        dst->head_ptr = src->head_ptr;
+    } else {
+        struct script_pcb *tail = dst->head_ptr;
+        while (tail->next_pcb != NULL){
+            tail = tail->next_pcb;
+        }
+        tail->next_pcb = src->head_ptr;
+    }
+
+    dst->num_processes += src->num_processes;
+}
+
+int run_pending_background(){
+    if (pending_background_block == NULL){
+        return 0;
+    }
+
+    int errCode = exec_block(pending_background_block);
+    pending_background_block = NULL;
+    return errCode;
+}
+
+void start_mt_workers(){
+    if (mt_workers_started){
+        return;
+    }
+
+    mt_shutdown = 0;
+    for (int i = 0; i < 2; i++){
+        pthread_create(&mt_workers[i], NULL, mt_worker_loop, NULL);
+    }
+    mt_workers_started = 1;
+}
+
+void enqueue_mt_block(struct execution_block *block_ptr){
+    if (block_ptr->head_ptr == NULL){
+        return;
+    }
+
+    struct script_pcb *new_head = block_ptr->head_ptr;
+    struct script_pcb *new_tail = new_head;
+    while (new_tail->next_pcb != NULL){
+        new_tail = new_tail->next_pcb;
+    }
+
+    pthread_mutex_lock(&mt_lock);
+    if (mt_ready_tail == NULL){
+        mt_ready_head = new_head;
+        mt_ready_tail = new_tail;
+    } else {
+        mt_ready_tail->next_pcb = new_head;
+        mt_ready_tail = new_tail;
+    }
+    mt_active_processes += block_ptr->num_processes;
+    pthread_cond_broadcast(&mt_cv);
+    pthread_mutex_unlock(&mt_lock);
+}
+
+void *mt_worker_loop(void *arg){
+    (void)arg;
+    int errCode = 0;
+
+    while (1){
+        pthread_mutex_lock(&mt_lock);
+        while (mt_ready_head == NULL && !(mt_shutdown && mt_active_processes == 0)){
+            pthread_cond_wait(&mt_cv, &mt_lock);
+        }
+
+        if (mt_ready_head == NULL && mt_shutdown && mt_active_processes == 0){
+            pthread_mutex_unlock(&mt_lock);
+            break;
+        }
+
+        struct script_pcb *pcb = mt_ready_head;
+        mt_ready_head = pcb->next_pcb;
+        if (mt_ready_head == NULL){
+            mt_ready_tail = NULL;
+        }
+        pcb->next_pcb = NULL;
+        pthread_mutex_unlock(&mt_lock);
+
+        int end = min(pcb->cur_instruct + pcb->quantum, pcb->start + (int)pcb->size);
+        for (int i = pcb->cur_instruct; i < end; i++){
+            char *cur_instruct = get_instruction(i);
+            int err = parseInput(cur_instruct);
+            if (err != 0){
+                errCode = 1;
+            }
+            pcb->cur_instruct++;
+        }
+
+        pthread_mutex_lock(&mt_lock);
+        if (pcb->cur_instruct >= pcb->start + (int)pcb->size){
+            mt_active_processes--;
+            free_script_memory(pcb->start, pcb->size);
+            free(pcb);
+        } else {
+            if (mt_ready_tail == NULL){
+                mt_ready_head = pcb;
+                mt_ready_tail = pcb;
+            } else {
+                mt_ready_tail->next_pcb = pcb;
+                mt_ready_tail = pcb;
+            }
+        }
+        pthread_cond_broadcast(&mt_cv);
+        pthread_mutex_unlock(&mt_lock);
+    }
+
+    return (void *)(long)errCode;
+}
