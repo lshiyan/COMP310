@@ -11,9 +11,10 @@ int exec_fcfs_block(struct execution_block *block_ptr);
 int exec_rr_block(struct execution_block *block_ptr);
 int exec_aging_block(struct execution_block *block_ptr);
 void free_block(struct execution_block *block_ptr);
+static int get_physical_index(struct script_pcb *pcb, int logical_idx);
 
 //Adds a given process to an execution block. Creates a new PCB for the process then appends it to the tail of the block.
-void add_process_to_block(char **line_list, struct execution_block *block, char *policy, int mem_start, int num_lines, int* pid_counter){
+void add_process_to_block(struct execution_block *block, char *policy, const char *script_name, int num_lines, int num_pages, int page_table[MAX_PAGES], int* pid_counter){
 
     struct script_pcb *new_pcb = malloc(sizeof *new_pcb); //NOTE: Must free this.
     *new_pcb = (struct script_pcb){0};
@@ -21,11 +22,14 @@ void add_process_to_block(char **line_list, struct execution_block *block, char 
     new_pcb->pid = *pid_counter;
     (*pid_counter)++;
 
-    new_pcb->start = mem_start;
+    strncpy(new_pcb->script_name, script_name, SCRIPT_NAME_SIZE - 1);
+    new_pcb->script_name[SCRIPT_NAME_SIZE - 1] = '\0';
     new_pcb->size = (size_t) num_lines;
-    new_pcb->cur_instruct = mem_start;
+    new_pcb->cur_instruct = 0;
     new_pcb->job_length = num_lines;
     new_pcb->quantum = strcmp(policy, "RR30") == 0 ? 30 : 2;
+    new_pcb->num_pages = num_pages;
+    memcpy(new_pcb->page_table, page_table, sizeof(int) * MAX_PAGES);
 
     if (block->head_ptr == NULL){
         block->head_ptr = new_pcb;
@@ -61,6 +65,14 @@ void add_process_to_block(char **line_list, struct execution_block *block, char 
     }
 }
 
+static int get_physical_index(struct script_pcb *pcb, int logical_idx){
+    int page_number = logical_idx / FRAME_SIZE;
+    int offset = logical_idx % FRAME_SIZE;
+    int frame_number = pcb->page_table[page_number];
+
+    return frame_number * FRAME_SIZE + offset;
+}
+
 //Executes all processes in a given block according to the policy.
 int exec_block(struct execution_block *block_ptr){
     char *policy = block_ptr->block_policy;
@@ -90,11 +102,10 @@ int exec_fcfs_block(struct execution_block *block_ptr){
     struct script_pcb *ptr = block_ptr->head_ptr;
     int errCode = 0;
     while (ptr != NULL){
-        int start = ptr->start;
-        int end = start + ptr->size;
+        int end = (int)ptr->size;
 
-        for (int mem_idx = start; mem_idx < end; mem_idx++){
-            char* cur_instruct = get_instruction(mem_idx);
+        for (int logical_idx = 0; logical_idx < end; logical_idx++){
+            char* cur_instruct = get_instruction(get_physical_index(ptr, logical_idx));
             int err = parseInput(cur_instruct); 
             if (err != 0){
                 errCode = 1;
@@ -117,16 +128,16 @@ int exec_rr_block(struct execution_block *block_ptr){
 
     while (processes_completed != block_ptr->num_processes){
         int start = ptr->cur_instruct;
-        int end = min(ptr->cur_instruct + RR_TIME, ptr->start + ptr->size);
+        int end = min(ptr->cur_instruct + RR_TIME, (int)ptr->size);
 
-        for (int mem_idx = start; mem_idx < end; mem_idx++){
-            char* cur_instruct = get_instruction(mem_idx);
+        for (int logical_idx = start; logical_idx < end; logical_idx++){
+            char* cur_instruct = get_instruction(get_physical_index(ptr, logical_idx));
             int err = parseInput(cur_instruct); 
             if (err != 0){
                 errCode = 1;
             }
             (ptr->cur_instruct)++;
-            if (ptr->cur_instruct == ptr->start + ptr->size){
+            if (ptr->cur_instruct == (int)ptr->size){
                 processes_completed++;
             }
         }
@@ -188,7 +199,7 @@ int exec_aging_block(struct execution_block *block_ptr){
         //Execute one instruction for the lowest length job.            
         ptr = pcb_list[min_idx];
 
-        char *next_instruct = get_instruction(ptr->cur_instruct);
+        char *next_instruct = get_instruction(get_physical_index(ptr, ptr->cur_instruct));
 
         int err = parseInput(next_instruct);
 
@@ -206,7 +217,7 @@ int exec_aging_block(struct execution_block *block_ptr){
         }
 
         //If this job just finished, set the finished value to 1.
-        if (ptr->cur_instruct == ptr->start + ptr->size){
+        if (ptr->cur_instruct == (int)ptr->size){
             finished[min_idx] = 1;
             completed_processes++;
         }
@@ -224,7 +235,7 @@ void free_block(struct execution_block *block_ptr){
     while (pcb != NULL)
     {
         struct script_pcb *next_pcb = pcb->next_pcb;
-        free_script_memory(pcb->start, pcb->size);
+        free_script_memory(pcb->script_name);
         free(pcb);
         pcb = next_pcb;
     }

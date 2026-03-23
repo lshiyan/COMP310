@@ -431,9 +431,11 @@ int exec(char *command_args[], int args_size){
 
     for (int i = 1; i < policy_idx; i++){
         (new_block->num_processes)++;
-        char *line_list[MEM_SIZE];  
+        char *line_list[MAX_SCRIPT_LINES];
+        int page_table[MAX_PAGES];
         char line[MAX_USER_INPUT];
         int num_lines = 0;
+        int num_pages = 0;
         FILE *p = fopen(command_args[i], "rt");      // the program is in a file
 
         if (p == NULL) {
@@ -454,14 +456,19 @@ int exec(char *command_args[], int args_size){
 
         fclose(p);
 
-        int start_idx = add_process_to_memory(line_list, num_lines);
-        if (start_idx == -1) {
+        int load_err = add_process_to_memory(command_args[i], line_list, num_lines, page_table, &num_pages);
+        if (load_err == -1) {
             printf("Error: Out of memory.\n");
+            for (int j = 0; j < num_lines; j++){
+                free(line_list[j]);
+            }
             return 1;
         }
         else{
-            //printf("Proccess successfully added to queue at mem_location %d\n", start_idx);
-            add_process_to_block(line_list, new_block, policy, start_idx, num_lines, &pid_counter);
+            add_process_to_block(new_block, policy, command_args[i], num_lines, num_pages, page_table, &pid_counter);
+            for (int j = 0; j < num_lines; j++){
+                free(line_list[j]);
+            }
         }
     }
 
@@ -595,9 +602,12 @@ void *mt_worker_loop(void *arg){
         pcb->next_pcb = NULL;
         pthread_mutex_unlock(&mt_lock);
 
-        int end = min(pcb->cur_instruct + pcb->quantum, pcb->start + (int)pcb->size);
+        int end = min(pcb->cur_instruct + pcb->quantum, (int)pcb->size);
         for (int i = pcb->cur_instruct; i < end; i++){
-            char *cur_instruct = get_instruction(i);
+            int page_number = i / FRAME_SIZE;
+            int offset = i % FRAME_SIZE;
+            int mem_idx = pcb->page_table[page_number] * FRAME_SIZE + offset;
+            char *cur_instruct = get_instruction(mem_idx);
             int err = parseInput(cur_instruct);
             if (err != 0){
                 errCode = 1;
@@ -606,9 +616,9 @@ void *mt_worker_loop(void *arg){
         }
 
         pthread_mutex_lock(&mt_lock);
-        if (pcb->cur_instruct >= pcb->start + (int)pcb->size){
+        if (pcb->cur_instruct >= (int)pcb->size){
             mt_active_processes--;
-            free_script_memory(pcb->start, pcb->size);
+            free_script_memory(pcb->script_name);
             free(pcb);
         } else {
             if (mt_ready_tail == NULL){
