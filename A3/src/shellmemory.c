@@ -5,7 +5,6 @@
 #include "shellmemory.h"
 #include "executor.h"
 
-
 struct memory_struct {
     char *var;
     char *value;
@@ -18,17 +17,9 @@ struct script_memory_struct{
     char line[LINE_SIZE];
 };
 
-struct loaded_script {
-    int used;
-    char name[SCRIPT_NAME_SIZE];
-    int num_lines;
-    int num_pages;
-    int page_table[MAX_PAGES];
-    int ref_count;
-};
-
-struct script_memory_struct scriptshellmemory[FRAME_STORE_SIZE];
+struct script_memory_struct scriptshellmemory[FRAME_STORE_SIZE*FRAME_SIZE];
 static struct loaded_script loaded_scripts[MAX_LOADED_SCRIPTS];
+static struct loaded_script *frame_to_script_map[FRAME_STORE_SIZE];
 
 // Helper functions
 int match(char *model, char *var) {
@@ -86,7 +77,8 @@ char *mem_get_value(char *var_in) {
     return "Variable does not exist";
 }
 
-static int alloc_frame(void){
+//Finds a FRAME_SIZE-sized block of memory in shell memory, returns start of frame.
+int alloc_frame(){
     for (int frame = 0; frame < MAX_PAGES; frame++){
         int frame_start = frame * FRAME_SIZE;
         int free_frame = 1;
@@ -106,6 +98,7 @@ static int alloc_frame(void){
     return -1;
 }
 
+//Returns pointer to existing loaded script, or NULL if none exists.
 static struct loaded_script *find_loaded_script_by_name(const char *script_name){
     for (int i = 0; i < MAX_LOADED_SCRIPTS; i++){
         if (loaded_scripts[i].used && strcmp(loaded_scripts[i].name, script_name) == 0){
@@ -116,6 +109,7 @@ static struct loaded_script *find_loaded_script_by_name(const char *script_name)
     return NULL;
 }
 
+//Returns address of first unused loaded_script struct.
 static struct loaded_script *alloc_loaded_script_slot(void){
     for (int i = 0; i < MAX_LOADED_SCRIPTS; i++){
         if (!loaded_scripts[i].used){
@@ -126,7 +120,8 @@ static struct loaded_script *alloc_loaded_script_slot(void){
     return NULL;
 }
 
-static void clear_frame(int frame_number){
+//Clears frame located at frame_number.
+void clear_frame(int frame_number){
     if (frame_number < 0 || frame_number >= MAX_PAGES){
         return;
     }
@@ -162,6 +157,35 @@ void free_script_memory(const char *script_name){
     script->ref_count = 0;
 }
 
+//Returns the loaded_script struct that is located at frame_number.
+struct loaded_script* get_script_by_frame(int frame_number){
+    struct loaded_script *script = frame_to_script_map[frame_number];
+
+    return script;
+}
+
+//Returns the loaded_script struct that matches script_name.
+struct loaded_script* get_script_by_name(const char* script_name){
+    for (int i = 0; i<MAX_LOADED_SCRIPTS; i++){
+        if (loaded_scripts[i].used == 1 && strcmp(script_name, loaded_scripts[i].name) == 0){
+            return &loaded_scripts[i];
+        }
+    }
+    return NULL;
+}
+
+//Loads a single line into script memory.
+int load_line_into_memory(const char* line, int memory_idx){
+    struct script_memory_struct script_memory = scriptshellmemory[memory_idx];
+
+    if ((script_memory.used) == 1){
+        printf("Error: memory at index %d is already used.", memory_idx);
+        return -1;
+    }
+
+    strcpy(script_memory.line, line);
+    return 0;
+}
 
 //Adds a process to the script memory, returns the memory location of the start if successful. Depending on policy, will also add by line length.
 int add_process_to_memory(const char *script_name, char **line_list, int num_lines, int page_table[MAX_PAGES], int *num_pages){
@@ -181,8 +205,17 @@ int add_process_to_memory(const char *script_name, char **line_list, int num_lin
     for (int i = 0; i < MAX_PAGES; i++){
         page_table[i] = -1;
     }
+    
+    struct loaded_script *new_script = alloc_loaded_script_slot();
+    if (new_script == NULL){
+        for (int page = 0; page < required_pages; page++){
+            clear_frame(page_table[page]);
+            page_table[page] = -1;
+        }
+        return -1;
+    }
 
-    for (int page = 0; page < required_pages; page++){
+    for (int page = 0; page < min(required_pages, 2); page++){
         int frame_number = alloc_frame();
         if (frame_number == -1){
             for (int prev_page = 0; prev_page < page; prev_page++){
@@ -192,6 +225,8 @@ int add_process_to_memory(const char *script_name, char **line_list, int num_lin
         }
 
         page_table[page] = frame_number;
+        frame_to_script_map[frame_number] = new_script;
+
         int frame_start = frame_number * FRAME_SIZE;
         for (int offset = 0; offset < FRAME_SIZE; offset++){
             int line_idx = page * FRAME_SIZE + offset;
@@ -204,17 +239,9 @@ int add_process_to_memory(const char *script_name, char **line_list, int num_lin
         }
     }
 
-    struct loaded_script *new_script = alloc_loaded_script_slot();
-    if (new_script == NULL){
-        for (int page = 0; page < required_pages; page++){
-            clear_frame(page_table[page]);
-            page_table[page] = -1;
-        }
-        return -1;
-    }
-
     new_script->used = 1;
     strncpy(new_script->name, script_name, SCRIPT_NAME_SIZE - 1);
+    new_script->line_list = line_list;
     new_script->name[SCRIPT_NAME_SIZE - 1] = '\0';
     new_script->num_lines = num_lines;
     new_script->num_pages = required_pages;

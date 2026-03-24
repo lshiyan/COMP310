@@ -2,6 +2,9 @@
 
 #include "shellmemory.h"
 
+#define min(a, b) (((a) < (b)) ? (a) : (b))
+#define max(a, b) (((a) < (b)) ? (b) : (a))
+
 struct script_pcb{
     int pid;
     char script_name[SCRIPT_NAME_SIZE];
@@ -13,6 +16,7 @@ struct script_pcb{
     int page_table[MAX_PAGES];
 
     struct script_pcb *next_pcb;
+    struct loaded_script *script;
 };
 
 struct execution_block{ //Consists of a block of pcbs with a singular policy to execute.

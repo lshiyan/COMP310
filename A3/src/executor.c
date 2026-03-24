@@ -4,14 +4,12 @@
 #include <string.h>
 #include <stdio.h>
 
-#define min(a, b) (((a) < (b)) ? (a) : (b))
-#define max(a, b) (((a) < (b)) ? (b) : (a))
-
 int exec_fcfs_block(struct execution_block *block_ptr);
 int exec_rr_block(struct execution_block *block_ptr);
 int exec_aging_block(struct execution_block *block_ptr);
 void free_block(struct execution_block *block_ptr);
 static int get_physical_index(struct script_pcb *pcb, int logical_idx);
+void handle_page_fault(struct execution_block *block_ptr, struct script_pcb *pcb_ptr);
 
 //Adds a given process to an execution block. Creates a new PCB for the process then appends it to the tail of the block.
 void add_process_to_block(struct execution_block *block, char *policy, const char *script_name, int num_lines, int num_pages, int page_table[MAX_PAGES], int* pid_counter){
@@ -30,6 +28,7 @@ void add_process_to_block(struct execution_block *block, char *policy, const cha
     new_pcb->quantum = strcmp(policy, "RR30") == 0 ? 30 : 2;
     new_pcb->num_pages = num_pages;
     memcpy(new_pcb->page_table, page_table, sizeof(int) * MAX_PAGES);
+    new_pcb->script = get_script_by_name(script_name);
 
     if (block->head_ptr == NULL){
         block->head_ptr = new_pcb;
@@ -65,6 +64,7 @@ void add_process_to_block(struct execution_block *block, char *policy, const cha
     }
 }
 
+//Returns index of physical memory location.
 static int get_physical_index(struct script_pcb *pcb, int logical_idx){
     int page_number = logical_idx / FRAME_SIZE;
     int offset = logical_idx % FRAME_SIZE;
@@ -120,33 +120,43 @@ int exec_fcfs_block(struct execution_block *block_ptr){
 }
 
 //Executes a block with the RR policy.
-int exec_rr_block(struct execution_block *block_ptr){
+int exec_rr_block(struct execution_block *block_ptr) {
     struct script_pcb *ptr = block_ptr->head_ptr;
     int errCode = 0;
     int processes_completed = 0;
-    int RR_TIME = strcmp(block_ptr->block_policy, "RR") == 0 ?  2 : 30;
+    int RR_TIME = strcmp(block_ptr->block_policy, "RR") == 0 ? 2 : 30;
 
-    while (processes_completed != block_ptr->num_processes){
+    while (processes_completed != block_ptr->num_processes) {
         int start = ptr->cur_instruct;
         int end = min(ptr->cur_instruct + RR_TIME, (int)ptr->size);
 
-        for (int logical_idx = start; logical_idx < end; logical_idx++){
-            char* cur_instruct = get_instruction(get_physical_index(ptr, logical_idx));
-            int err = parseInput(cur_instruct); 
-            if (err != 0){
+        for (int logical_idx = start; logical_idx < end; logical_idx++) {
+            int physical_index = get_physical_index(ptr, logical_idx);
+            char *cur_instruct = get_instruction(physical_index);
+
+            if (cur_instruct == NULL) {
+                handle_page_fault(block_ptr, ptr);
+                move_pcb_to_back(block_ptr, ptr);
+                break;
+            }
+
+            int err = parseInput(cur_instruct);
+            if (err != 0) {
                 errCode = 1;
             }
-            (ptr->cur_instruct)++;
-            if (ptr->cur_instruct == (int)ptr->size){
+
+            ptr->cur_instruct++;
+
+            if (ptr->cur_instruct == (int)ptr->size) {
                 processes_completed++;
+                break;
             }
         }
-        
-        if (ptr->next_pcb == NULL){
+
+        ptr = ptr->next_pcb;
+
+        if (ptr == NULL) {
             ptr = block_ptr->head_ptr;
-        }
-        else{
-            ptr = ptr->next_pcb;
         }
     }
 
@@ -243,4 +253,93 @@ void free_block(struct execution_block *block_ptr){
     free(block_ptr->block_policy);
 
     free(block_ptr);
+}
+
+//Handles page faults, modifies page tables and frees up memory if necessary.
+void handle_page_fault(struct execution_block *block_ptr, struct script_pcb *pcb_ptr){
+    printf("Page Fault!\n");
+
+    int free_frame = alloc_frame();
+
+    if (free_frame == -1){
+        int free_frame = 0; //TODO: Change this to do LRU policy.
+        struct loaded_script *evicted_page_script = get_script_by_frame(free_frame);
+        
+        for (int i = 0; i < MAX_PAGES; i++){
+            if ((evicted_page_script->page_table)[i] == free_frame){
+                (evicted_page_script->page_table)[i] = -1;
+            }
+        }
+
+        char* evicted_lines[FRAME_SIZE];
+
+        for (int offset = 0; offset < FRAME_SIZE; offset++){
+            char* instruction = get_instruction(free_frame + offset);
+            strcpy(evicted_lines[offset], instruction);
+        }
+
+        printf("Victim page contents:\n");
+
+        for (int i = 0; i < FRAME_SIZE; i ++){
+            printf("%s\n", evicted_lines[i]);
+        }
+
+        printf("End of victim page contents.\n");
+
+        clear_frame(free_frame);
+    }
+    
+    struct loaded_script *script = (pcb_ptr->script);
+    int start_line = pcb_ptr->cur_instruct;
+    int cur_page = (pcb_ptr->cur_instruct) / FRAME_SIZE;
+
+        for (int offset = 0; offset < FRAME_SIZE; offset++){
+        if(start_line + offset < pcb_ptr->size){
+            load_line_into_memory((script->line_list)[start_line + offset], free_frame + offset);
+        }
+    }
+
+    (script->page_table)[start_line / FRAME_SIZE] = free_frame;
+    (pcb_ptr->page_table)[start_line / FRAME_SIZE] = free_frame;
+}
+
+//Moves pcb to the back of the ready queue.
+void move_pcb_to_back(struct execution_block *block_ptr, struct script_pcb *pcb) {
+    if (block_ptr == NULL || pcb == NULL || block_ptr->head_ptr == NULL) {
+        return;
+    }
+
+    if (pcb == block_ptr->head_ptr && pcb->next_pcb == NULL) {
+        return;
+    }
+
+    struct script_pcb *prev = NULL;
+    struct script_pcb *cur = block_ptr->head_ptr;
+
+    while (cur != NULL && cur != pcb) {
+        prev = cur;
+        cur = cur->next_pcb;
+    }
+
+    if (cur == NULL) {
+        return;
+    }
+
+    if (cur->next_pcb == NULL) {
+        return;
+    }
+
+    if (prev == NULL) {
+        block_ptr->head_ptr = cur->next_pcb;
+    } else {
+        prev->next_pcb = cur->next_pcb;
+    }
+
+    struct script_pcb *tail = block_ptr->head_ptr;
+    while (tail->next_pcb != NULL) {
+        tail = tail->next_pcb;
+    }
+
+    tail->next_pcb = cur;
+    cur->next_pcb = NULL;
 }
