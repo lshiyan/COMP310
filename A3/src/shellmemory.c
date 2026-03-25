@@ -17,7 +17,7 @@ struct script_memory_struct{
     char line[LINE_SIZE];
 };
 
-struct script_memory_struct scriptshellmemory[FRAME_STORE_SIZE*FRAME_SIZE];
+static struct script_memory_struct scriptshellmemory[FRAME_STORE_SIZE*FRAME_SIZE];
 static struct loaded_script loaded_scripts[MAX_LOADED_SCRIPTS];
 static struct loaded_script *frame_to_script_map[FRAME_STORE_SIZE];
 
@@ -176,14 +176,16 @@ struct loaded_script* get_script_by_name(const char* script_name){
 
 //Loads a single line into script memory.
 int load_line_into_memory(const char* line, int memory_idx){
-    struct script_memory_struct script_memory = scriptshellmemory[memory_idx];
+    struct script_memory_struct* script_memory = &scriptshellmemory[memory_idx];
 
-    if ((script_memory.used) == 1){
+    if ((script_memory->used) == 1){
         printf("Error: memory at index %d is already used.", memory_idx);
         return -1;
     }
 
-    strcpy(script_memory.line, line);
+    strcpy(script_memory->line, line);
+    script_memory->used = 1;
+
     return 0;
 }
 
@@ -241,9 +243,14 @@ int add_process_to_memory(const char *script_name, char **line_list, int num_lin
 
     new_script->used = 1;
     strncpy(new_script->name, script_name, SCRIPT_NAME_SIZE - 1);
-    new_script->line_list = line_list;
     new_script->name[SCRIPT_NAME_SIZE - 1] = '\0';
     new_script->num_lines = num_lines;
+
+    for (int i = 0; i < new_script->num_lines; i++){
+        new_script->line_list[i] = malloc(LINE_SIZE);
+        strcpy(new_script->line_list[i], line_list[i]);
+    }
+
     new_script->num_pages = required_pages;
     memcpy(new_script->page_table, page_table, sizeof(int) * MAX_PAGES);
     new_script->ref_count = 1;
@@ -257,7 +264,7 @@ char* get_instruction(int mem_idx){
     struct script_memory_struct *script_mem = &scriptshellmemory[mem_idx];
 
     if (script_mem->used == 0){
-        printf("Error: script memory at location %d is unused.", mem_idx);
+        printf("Error: script memory at location %d is unused.\n", mem_idx);
         return NULL;
     }
 

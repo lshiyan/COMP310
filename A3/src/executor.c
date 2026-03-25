@@ -10,6 +10,7 @@ int exec_aging_block(struct execution_block *block_ptr);
 void free_block(struct execution_block *block_ptr);
 static int get_physical_index(struct script_pcb *pcb, int logical_idx);
 void handle_page_fault(struct execution_block *block_ptr, struct script_pcb *pcb_ptr);
+void move_pcb_to_back(struct execution_block *block_ptr, struct script_pcb *pcb);
 
 //Adds a given process to an execution block. Creates a new PCB for the process then appends it to the tail of the block.
 void add_process_to_block(struct execution_block *block, char *policy, const char *script_name, int num_lines, int num_pages, int page_table[MAX_PAGES], int* pid_counter){
@@ -122,6 +123,9 @@ int exec_fcfs_block(struct execution_block *block_ptr){
 //Executes a block with the RR policy.
 int exec_rr_block(struct execution_block *block_ptr) {
     struct script_pcb *ptr = block_ptr->head_ptr;
+
+    char** line_list = (ptr->script)->line_list;
+
     int errCode = 0;
     int processes_completed = 0;
     int RR_TIME = strcmp(block_ptr->block_policy, "RR") == 0 ? 2 : 30;
@@ -134,6 +138,7 @@ int exec_rr_block(struct execution_block *block_ptr) {
             int physical_index = get_physical_index(ptr, logical_idx);
             char *cur_instruct = get_instruction(physical_index);
 
+            
             if (cur_instruct == NULL) {
                 handle_page_fault(block_ptr, ptr);
                 move_pcb_to_back(block_ptr, ptr);
@@ -290,12 +295,13 @@ void handle_page_fault(struct execution_block *block_ptr, struct script_pcb *pcb
     }
     
     struct loaded_script *script = (pcb_ptr->script);
+
     int start_line = pcb_ptr->cur_instruct;
     int cur_page = (pcb_ptr->cur_instruct) / FRAME_SIZE;
 
-        for (int offset = 0; offset < FRAME_SIZE; offset++){
+    for (int offset = 0; offset < FRAME_SIZE; offset++){
         if(start_line + offset < pcb_ptr->size){
-            load_line_into_memory((script->line_list)[start_line + offset], free_frame + offset);
+            load_line_into_memory((script->line_list)[start_line + offset], free_frame*FRAME_SIZE + offset);
         }
     }
 

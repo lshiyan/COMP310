@@ -1,3 +1,5 @@
+#pragma once
+
 #define SHELL_MEMORY_SIZE 1000
 #define FRAME_SIZE 3
 
@@ -20,7 +22,7 @@ struct loaded_script {
     int used;
     char name[SCRIPT_NAME_SIZE];
     int num_lines;
-    char** line_list;
+    char* line_list[MAX_SCRIPT_LINES];
     int num_pages;
     int page_table[MAX_PAGES];
     int ref_count;

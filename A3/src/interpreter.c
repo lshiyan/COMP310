@@ -221,7 +221,7 @@ int source(char *script) {
     char *command_args[3];
     command_args[0] = "exec";
     command_args[1] = strdup(script);
-    command_args[2] = "FCFS";
+    command_args[2] = "RR";
 
     errCode = exec(command_args, 3);
 
