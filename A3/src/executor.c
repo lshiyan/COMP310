@@ -68,8 +68,17 @@ void add_process_to_block(struct execution_block *block, char *policy, const cha
 //Returns index of physical memory location.
 static int get_physical_index(struct script_pcb *pcb, int logical_idx){
     int page_number = logical_idx / FRAME_SIZE;
+
+    if (page_number >= MAX_PAGES){
+        return -1;
+    }
+
     int offset = logical_idx % FRAME_SIZE;
     int frame_number = pcb->page_table[page_number];
+
+    if (frame_number == -1){
+        return -1;
+    }
 
     return frame_number * FRAME_SIZE + offset;
 }
@@ -137,7 +146,6 @@ int exec_rr_block(struct execution_block *block_ptr) {
         for (int logical_idx = start; logical_idx < end; logical_idx++) {
             int physical_index = get_physical_index(ptr, logical_idx);
             char *cur_instruct = get_instruction(physical_index);
-
             
             if (cur_instruct == NULL) {
                 handle_page_fault(block_ptr, ptr);
@@ -262,12 +270,12 @@ void free_block(struct execution_block *block_ptr){
 
 //Handles page faults, modifies page tables and frees up memory if necessary.
 void handle_page_fault(struct execution_block *block_ptr, struct script_pcb *pcb_ptr){
-    printf("Page Fault!\n");
+    printf("Page Fault! ");
 
     int free_frame = alloc_frame();
 
     if (free_frame == -1){
-        int free_frame = 0; //TODO: Change this to do LRU policy.
+        free_frame = 0; //TODO: Change this to do LRU policy.
         struct loaded_script *evicted_page_script = get_script_by_frame(free_frame);
         
         for (int i = 0; i < MAX_PAGES; i++){
@@ -276,28 +284,44 @@ void handle_page_fault(struct execution_block *block_ptr, struct script_pcb *pcb
             }
         }
 
-        char* evicted_lines[FRAME_SIZE];
+        char* evicted_lines[FRAME_SIZE] = {0};
 
-        for (int offset = 0; offset < FRAME_SIZE; offset++){
-            char* instruction = get_instruction(free_frame + offset);
+        for (int offset = 0; offset < FRAME_SIZE; offset++) {
+            char* instruction = get_instruction(free_frame*FRAME_SIZE + offset);
+
+            if (instruction == NULL){
+                continue;
+            }
+
+            evicted_lines[offset] = malloc(strlen(instruction) + 1);
             strcpy(evicted_lines[offset], instruction);
         }
 
         printf("Victim page contents:\n");
+        printf("\n");
 
         for (int i = 0; i < FRAME_SIZE; i ++){
-            printf("%s\n", evicted_lines[i]);
+            if (evicted_lines[i] != NULL){
+                printf("%s", evicted_lines[i]);
+            }
+
         }
 
-        printf("End of victim page contents.\n");
+        printf("\n");
+        printf("End of victim page contents.");
 
         clear_frame(free_frame);
+
+        for (int i = 0; i < FRAME_SIZE; i++) {
+            free(evicted_lines[i]);
+        }
     }
     
+    printf("\n");
     struct loaded_script *script = (pcb_ptr->script);
 
-    int start_line = pcb_ptr->cur_instruct;
-    int cur_page = (pcb_ptr->cur_instruct) / FRAME_SIZE;
+    int cur_page = pcb_ptr->cur_instruct / FRAME_SIZE;
+    int start_line = cur_page * FRAME_SIZE;
 
     for (int offset = 0; offset < FRAME_SIZE; offset++){
         if(start_line + offset < pcb_ptr->size){
@@ -305,8 +329,8 @@ void handle_page_fault(struct execution_block *block_ptr, struct script_pcb *pcb
         }
     }
 
-    (script->page_table)[start_line / FRAME_SIZE] = free_frame;
-    (pcb_ptr->page_table)[start_line / FRAME_SIZE] = free_frame;
+    (script->page_table)[cur_page] = free_frame;
+    (pcb_ptr->page_table)[cur_page] = free_frame;
 }
 
 //Moves pcb to the back of the ready queue.

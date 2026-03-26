@@ -17,7 +17,7 @@ struct script_memory_struct{
     char line[LINE_SIZE];
 };
 
-static struct script_memory_struct scriptshellmemory[FRAME_STORE_SIZE*FRAME_SIZE];
+static struct script_memory_struct scriptshellmemory[FRAME_STORE_SIZE];
 static struct loaded_script loaded_scripts[MAX_LOADED_SCRIPTS];
 static struct loaded_script *frame_to_script_map[FRAME_STORE_SIZE];
 
@@ -79,7 +79,8 @@ char *mem_get_value(char *var_in) {
 
 //Finds a FRAME_SIZE-sized block of memory in shell memory, returns start of frame.
 int alloc_frame(){
-    for (int frame = 0; frame < MAX_PAGES; frame++){
+    int num_frames = FRAME_STORE_SIZE / FRAME_SIZE;
+    for (int frame = 0; frame < num_frames; frame++){
         int frame_start = frame * FRAME_SIZE;
         int free_frame = 1;
 
@@ -179,7 +180,6 @@ int load_line_into_memory(const char* line, int memory_idx){
     struct script_memory_struct* script_memory = &scriptshellmemory[memory_idx];
 
     if ((script_memory->used) == 1){
-        printf("Error: memory at index %d is already used.", memory_idx);
         return -1;
     }
 
@@ -200,9 +200,6 @@ int add_process_to_memory(const char *script_name, char **line_list, int num_lin
     }
 
     int required_pages = (num_lines + FRAME_SIZE - 1) / FRAME_SIZE;
-    if (required_pages > MAX_PAGES){
-        return -1;
-    }
 
     for (int i = 0; i < MAX_PAGES; i++){
         page_table[i] = -1;
@@ -261,10 +258,14 @@ int add_process_to_memory(const char *script_name, char **line_list, int num_lin
 
 //Returns a pointer to the instruction located at index mem_idx in scriptshellmemory.
 char* get_instruction(int mem_idx){
+
+    if (mem_idx == -1){
+        return NULL;
+    }
+
     struct script_memory_struct *script_mem = &scriptshellmemory[mem_idx];
 
     if (script_mem->used == 0){
-        printf("Error: script memory at location %d is unused.\n", mem_idx);
         return NULL;
     }
 

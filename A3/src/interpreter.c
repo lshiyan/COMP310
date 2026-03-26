@@ -442,16 +442,15 @@ int exec(char *command_args[], int args_size){
             return badcommandFileDoesNotExist();
         }
 
-        fgets(line, MAX_USER_INPUT - 1, p);
-        while (1) {
+        while (fgets(line, MAX_USER_INPUT, p) != NULL) {
             line_list[num_lines] = malloc(strlen(line) + 1);
+            if (line_list[num_lines] == NULL) {
+                fclose(p);
+                return 1;
+            }
+
             strcpy(line_list[num_lines], line);
             num_lines++;
-
-            if (feof(p)) {
-                break;
-            }
-            fgets(line, MAX_USER_INPUT - 1, p);
         }
 
         fclose(p);
