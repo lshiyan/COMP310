@@ -20,6 +20,8 @@ struct script_memory_struct{
 static struct script_memory_struct scriptshellmemory[FRAME_STORE_SIZE];
 static struct loaded_script loaded_scripts[MAX_LOADED_SCRIPTS];
 static struct loaded_script *frame_to_script_map[FRAME_STORE_SIZE];
+static unsigned long frame_access_time[FRAME_STORE_SIZE / FRAME_SIZE];
+static unsigned long access_clock = 0;
 
 // Helper functions
 int match(char *model, char *var) {
@@ -40,6 +42,33 @@ void mem_init(){
         shellmemory[i].var   = "none";
         shellmemory[i].value = "none";
     }
+
+    for (i = 0; i < FRAME_STORE_SIZE; i++){
+        scriptshellmemory[i].used = 0;
+        scriptshellmemory[i].line[0] = '\0';
+    }
+
+    for (i = 0; i < MAX_LOADED_SCRIPTS; i++){
+        loaded_scripts[i].used = 0;
+        loaded_scripts[i].name[0] = '\0';
+        loaded_scripts[i].num_lines = 0;
+        loaded_scripts[i].num_pages = 0;
+        loaded_scripts[i].ref_count = 0;
+        for (int j = 0; j < MAX_PAGES; j++){
+            loaded_scripts[i].page_table[j] = -1;
+        }
+
+        for (int j = 0; j < MAX_SCRIPT_LINES; j++){
+            loaded_scripts[i].line_list[j] = NULL;
+        }
+    }
+
+    for (i = 0; i < FRAME_STORE_SIZE / FRAME_SIZE; i++){
+        frame_to_script_map[i] = NULL;
+        frame_access_time[i] = 0;
+    }
+
+    access_clock = 0;
 }
 
 // Set key value pair
@@ -99,6 +128,42 @@ int alloc_frame(){
     return -1;
 }
 
+int find_lru_frame(){
+    int num_frames = FRAME_STORE_SIZE / FRAME_SIZE;
+    int lru_frame = -1;
+
+    for (int frame = 0; frame < num_frames; frame++){
+        int frame_start = frame * FRAME_SIZE;
+        if (!scriptshellmemory[frame_start].used){
+            continue;
+        }
+
+        if (lru_frame == -1 || frame_access_time[frame] < frame_access_time[lru_frame]){
+            lru_frame = frame;
+        }
+    }
+
+    return lru_frame;
+}
+
+void touch_frame(int frame_number){
+    int num_frames = FRAME_STORE_SIZE / FRAME_SIZE;
+    if (frame_number < 0 || frame_number >= num_frames){
+        return;
+    }
+
+    frame_access_time[frame_number] = ++access_clock;
+}
+
+void map_frame_to_script(int frame_number, struct loaded_script *script){
+    int num_frames = FRAME_STORE_SIZE / FRAME_SIZE;
+    if (frame_number < 0 || frame_number >= num_frames){
+        return;
+    }
+
+    frame_to_script_map[frame_number] = script;
+}
+
 //Returns pointer to existing loaded script, or NULL if none exists.
 static struct loaded_script *find_loaded_script_by_name(const char *script_name){
     for (int i = 0; i < MAX_LOADED_SCRIPTS; i++){
@@ -123,7 +188,8 @@ static struct loaded_script *alloc_loaded_script_slot(void){
 
 //Clears frame located at frame_number.
 void clear_frame(int frame_number){
-    if (frame_number < 0 || frame_number >= MAX_PAGES){
+    int num_frames = FRAME_STORE_SIZE / FRAME_SIZE;
+    if (frame_number < 0 || frame_number >= num_frames){
         return;
     }
 
@@ -132,6 +198,9 @@ void clear_frame(int frame_number){
         scriptshellmemory[frame_start + offset].used = 0;
         scriptshellmemory[frame_start + offset].line[0] = '\0';
     }
+
+    frame_to_script_map[frame_number] = NULL;
+    frame_access_time[frame_number] = 0;
 }
 
 //Frees num_lines of memory starting from index start from shell memory.
@@ -149,6 +218,11 @@ void free_script_memory(const char *script_name){
     for (int page = 0; page < script->num_pages; page++){
         clear_frame(script->page_table[page]);
         script->page_table[page] = -1;
+    }
+
+    for (int i = 0; i < script->num_lines; i++){
+        free(script->line_list[i]);
+        script->line_list[i] = NULL;
     }
 
     script->used = 0;
@@ -224,7 +298,7 @@ int add_process_to_memory(const char *script_name, char **line_list, int num_lin
         }
 
         page_table[page] = frame_number;
-        frame_to_script_map[frame_number] = new_script;
+        map_frame_to_script(frame_number, new_script);
 
         int frame_start = frame_number * FRAME_SIZE;
         for (int offset = 0; offset < FRAME_SIZE; offset++){
@@ -236,6 +310,8 @@ int add_process_to_memory(const char *script_name, char **line_list, int num_lin
                 scriptshellmemory[frame_start + offset].line[0] = '\0';
             }
         }
+
+        touch_frame(frame_number);
     }
 
     new_script->used = 1;

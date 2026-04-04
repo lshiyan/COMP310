@@ -35,7 +35,10 @@ int add_process_to_memory(const char *script_name, char **line_list, int num_lin
 char* get_instruction(int mem_idx);
 void free_script_memory(const char *script_name);
 int alloc_frame();
+int find_lru_frame();
 void clear_frame(int frame_number);
 struct loaded_script* get_script_by_frame(int frame_number);
 int load_line_into_memory(const char* line, int memory_idx);
 struct loaded_script* get_script_by_name(const char* script_name);
+void touch_frame(int frame_number);
+void map_frame_to_script(int frame_number, struct loaded_script *script);

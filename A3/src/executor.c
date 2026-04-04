@@ -74,11 +74,14 @@ static int get_physical_index(struct script_pcb *pcb, int logical_idx){
     }
 
     int offset = logical_idx % FRAME_SIZE;
-    int frame_number = pcb->page_table[page_number];
+    int frame_number = pcb->script->page_table[page_number];
 
     if (frame_number == -1){
         return -1;
     }
+
+    pcb->page_table[page_number] = frame_number;
+    touch_frame(frame_number);
 
     return frame_number * FRAME_SIZE + offset;
 }
@@ -270,17 +273,19 @@ void free_block(struct execution_block *block_ptr){
 
 //Handles page faults, modifies page tables and frees up memory if necessary.
 void handle_page_fault(struct execution_block *block_ptr, struct script_pcb *pcb_ptr){
-    printf("Page Fault! ");
-
+    (void)block_ptr;
     int free_frame = alloc_frame();
 
     if (free_frame == -1){
-        free_frame = 0; //TODO: Change this to do LRU policy.
+        printf("Page fault! ");
+        free_frame = find_lru_frame();
         struct loaded_script *evicted_page_script = get_script_by_frame(free_frame);
-        
-        for (int i = 0; i < MAX_PAGES; i++){
-            if ((evicted_page_script->page_table)[i] == free_frame){
-                (evicted_page_script->page_table)[i] = -1;
+
+        if (evicted_page_script != NULL){
+            for (int i = 0; i < MAX_PAGES; i++){
+                if ((evicted_page_script->page_table)[i] == free_frame){
+                    (evicted_page_script->page_table)[i] = -1;
+                }
             }
         }
 
@@ -297,27 +302,23 @@ void handle_page_fault(struct execution_block *block_ptr, struct script_pcb *pcb
             strcpy(evicted_lines[offset], instruction);
         }
 
-        printf("Victim page contents:\n");
-        printf("\n");
-
+        printf("Victim page contents:\n\n");
         for (int i = 0; i < FRAME_SIZE; i ++){
             if (evicted_lines[i] != NULL){
                 printf("%s", evicted_lines[i]);
             }
-
         }
-
-        printf("\n");
-        printf("End of victim page contents.");
+        printf("\nEnd of victim page contents.\n");
 
         clear_frame(free_frame);
 
         for (int i = 0; i < FRAME_SIZE; i++) {
             free(evicted_lines[i]);
         }
+    } else {
+        printf("Page fault!\n");
     }
-    
-    printf("\n");
+
     struct loaded_script *script = (pcb_ptr->script);
 
     int cur_page = pcb_ptr->cur_instruct / FRAME_SIZE;
@@ -329,6 +330,8 @@ void handle_page_fault(struct execution_block *block_ptr, struct script_pcb *pcb
         }
     }
 
+    map_frame_to_script(free_frame, script);
+    touch_frame(free_frame);
     (script->page_table)[cur_page] = free_frame;
     (pcb_ptr->page_table)[cur_page] = free_frame;
 }

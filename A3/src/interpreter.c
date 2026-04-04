@@ -217,18 +217,8 @@ int print(char *var) {
 }
 
 int source(char *script) {
-    int errCode = 0;
-    char *command_args[3];
-    command_args[0] = "exec";
-    command_args[1] = strdup(script);
-    command_args[2] = "RR";
-
-    errCode = exec(command_args, 3);
-
-    free(command_args[1]);
-
-    
-    return errCode;
+    char *exec_args[] = {"exec", script, "RR"};
+    return exec(exec_args, 3);
 }
 
 int echo(char *string){
